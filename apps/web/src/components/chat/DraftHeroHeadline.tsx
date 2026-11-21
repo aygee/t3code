@@ -244,7 +244,9 @@ export function DraftHeroHeadline({
         >
           <DraftProjectName
             value={
-              isScratchDraft ? gt("No project") : (activeProjectTitle ?? gt("Choose a project"))
+              isScratchDraft && !activeProject.hasCustomTitle
+                ? gt("No project")
+                : (activeProjectTitle ?? gt("Choose a project"))
             }
             singleLine
           />

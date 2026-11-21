@@ -921,6 +921,11 @@ function OpenCommandPaletteDialog(props: {
       });
       if (scratchTargetEnvironmentId === null) return projectItems;
 
+      const scratchProject = projectPickerEntries.find(
+        ({ targetProject }) =>
+          targetProject.environmentId === scratchTargetEnvironmentId &&
+          isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)),
+      )?.targetProject;
       const noProjectIndex = newThreadNoProjectIndex(
         projectPickerEntries.map(({ group, targetProject, isPreferred }) => ({
           isScratch: isScratchProject(
@@ -936,8 +941,13 @@ function OpenCommandPaletteDialog(props: {
         {
           kind: "action" as const,
           value: NEW_THREAD_NO_PROJECT_VALUE,
-          searchTerms: ["no project", "without project", "none"],
-          title: gt("No project"),
+          searchTerms: [
+            "no project",
+            "without project",
+            "none",
+            ...(scratchProject?.hasCustomTitle ? [scratchProject.title] : []),
+          ],
+          title: scratchProject?.hasCustomTitle ? scratchProject.title : gt("No project"),
           icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
           shortcutCommand: "chat.newWithoutProject" as const,
           run: () => startScratchThread(scratchTargetEnvironmentId),

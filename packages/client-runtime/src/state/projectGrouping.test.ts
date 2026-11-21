@@ -184,6 +184,17 @@ describe("buildProjectGroups", () => {
     },
   );
 
+  it("labels the scratch group with its custom name once renamed", () => {
+    const label = (overrides: Parameters<typeof makeProject>[2]) =>
+      buildProjectGroups({
+        projects: [makeProject("scratch", "/scratch", { isScratch: true, ...overrides })],
+        settings: settings("repository"),
+        groupScratchProjects: true,
+      })[0]!.label;
+    expect(label({ title: "scratch" })).toBe("No project");
+    expect(label({ title: "Scratch", hasCustomTitle: true })).toBe("Scratch");
+  });
+
   it("retains a repository filter that still belongs to an ordinary project", () => {
     const scratch = makeProject("scratch", "/scratch", { isScratch: true });
     const ordinary = makeProject("ordinary", "/ordinary");
