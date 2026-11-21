@@ -7,6 +7,7 @@ import {
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
+  type LimitGrouping,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -468,11 +469,13 @@ export function UsageLimitsSection({
   now,
   failedLabels,
   selectedEnvironmentIds,
+  grouping = "pooled",
   wide = false,
 }: {
   readonly now: number;
   readonly failedLabels: readonly string[];
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
+  readonly grouping?: LimitGrouping;
   readonly wide?: boolean;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -480,7 +483,7 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const pools = collectLimitPools(collectLimitAccounts(selected), now, grouping);
   const m = useMessages();
   const notices = collectLimitNotices(selected, m);
   const externalLinks = collectExternalUsageLinks(selected, m);
@@ -501,13 +504,18 @@ export function UsageLimitsSection({
       {pools.map((pool) => {
         const windows = displayLimitWindows(pool);
         return (
-          <Fragment key={pool.driver}>
+          <Fragment key={pool.key}>
             <View className="gap-3">
               <View className="flex-row items-center gap-2 px-1">
                 <ProviderIcon provider={pool.driver} size={18} />
                 <Text className="text-base font-t3-medium text-foreground">
                   {providerClients.get(pool.driver)?.label ?? pool.driver}
                 </Text>
+                {pool.account ? (
+                  <Text className="shrink text-base text-foreground-muted" numberOfLines={1}>
+                    {`· ${accountName(pool.account, m)}${pool.account.plan ? ` · ${pool.account.plan}` : ""}`}
+                  </Text>
+                ) : null}
               </View>
               {windows.map((window) => {
                 const details =

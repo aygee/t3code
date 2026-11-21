@@ -14,7 +14,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
+import { providerSeries, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { UsageShareBar } from "./UsageShareBar";
 import {
   cacheHitRate,
@@ -106,7 +106,7 @@ export function UsageModelDialog({
 
             {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
             <UsageProviderChart
-              providers={providers}
+              series={providerSeries(providers)}
               days={chartWindow.days}
               daily={usage.daily}
               hours={chartWindow.hours}

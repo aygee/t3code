@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
@@ -11,8 +12,10 @@ import {
 import {
   isCompatibleUsageContractVersion,
   isModelCostUnknown,
+  type AccountTotals,
   type DailyTotals,
   type MergedUsage,
+  type ModelTotals,
 } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
@@ -31,7 +34,9 @@ import { RefreshControl } from "../../components/ui/RefreshControl";
 import Animated, { FadeIn, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import type { LimitGrouping } from "@t3tools/shared/usageLimits";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { environmentPresentations } from "../../state/presentation";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { AppText as Text } from "../../components/ui/AppText";
 import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-width";
@@ -103,6 +108,25 @@ function UsageScreen(props: {
     label: m(option.label),
     accessibilityLabel: m(option.accessibilityLabel),
   }));
+  const [grouping, setGrouping] = useState<LimitGrouping>("pooled");
+  const presentationsWithProviders = useAtomValue(
+    environmentPresentations.presentationsWithProvidersAtom,
+  );
+  // Accounts are transcript directories; a configured instance names one better than its path.
+  const accountName = (account: AccountTotals): string | null => {
+    const instanceId = account.instanceIds[0];
+    if (instanceId === undefined) return account.homePath;
+    const providers =
+      account.environmentId === null
+        ? []
+        : (presentationsWithProviders.get(account.environmentId)?.serverConfig?.providers ?? []);
+    const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+    return provider?.displayName?.trim() || instanceId;
+  };
+  const groupingOptions = [
+    { value: "pooled" as const, label: gt("Pooled") },
+    { value: "account" as const, label: gt("By account") },
+  ];
   const insets = useSafeAreaInsets();
   const headerOnly = use(NativeWorkspaceTabActivityContext)?.headerOnly === true;
   const [selection, setSelection] = useState(() => ({
@@ -158,6 +182,7 @@ function UsageScreen(props: {
         costUsd: hour.costUsd,
         totalTokens: hour.totalTokens,
         byProvider: hour.byProvider,
+        byAccount: hour.byAccount,
       }))
     : merged.daily;
 
@@ -208,7 +233,15 @@ function UsageScreen(props: {
     isPast24Hours,
     timeZone: window.timeZone,
   };
-  const providers = <ProviderSection merged={merged} metric={metric} compact={wide} />;
+  const providers = (
+    <ProviderSection
+      merged={merged}
+      metric={metric}
+      compact={wide}
+      grouping={grouping}
+      accountName={accountName}
+    />
+  );
 
   const showEnvironmentFilter = environments.length > 0 || selectedEnvironmentIds !== null;
   const selectEnvironment = (value: string) => {
@@ -269,9 +302,7 @@ function UsageScreen(props: {
           <View className="w-full gap-6 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
             {wide ? (
               <View className="flex-row items-center gap-3">
-                {showingLimits ? (
-                  <View className="flex-1" />
-                ) : (
+                {showingLimits ? null : (
                   <SegmentedControl
                     options={windowOptions}
                     selected={windowDays}
@@ -280,6 +311,13 @@ function UsageScreen(props: {
                     className="flex-1"
                   />
                 )}
+                <SegmentedControl
+                  options={groupingOptions}
+                  selected={grouping}
+                  onSelect={setGrouping}
+                  size="compact"
+                  className="flex-1"
+                />
                 <SegmentedControl
                   options={viewOptions}
                   selected={view}
@@ -290,12 +328,20 @@ function UsageScreen(props: {
                 />
               </View>
             ) : (
-              <SegmentedControl
-                options={viewOptions}
-                selected={view}
-                onSelect={setView}
-                role="tab"
-              />
+              <>
+                <SegmentedControl
+                  options={viewOptions}
+                  selected={view}
+                  onSelect={setView}
+                  role="tab"
+                />
+                <SegmentedControl
+                  options={groupingOptions}
+                  selected={grouping}
+                  onSelect={setGrouping}
+                  size="compact"
+                />
+              </>
             )}
             <Animated.View
               key={showingLimits ? "limits" : "usage"}
@@ -307,6 +353,7 @@ function UsageScreen(props: {
                   now={limits.now}
                   failedLabels={limits.failedLabels}
                   selectedEnvironmentIds={selectedEnvironmentIds}
+                  grouping={grouping}
                   wide={wide}
                 />
               ) : (
@@ -395,7 +442,13 @@ function UsageScreen(props: {
                           columns={width >= 900 ? 6 : wide ? 3 : 2}
                         />
                         <CostSection merged={merged} wide={wide} />
-                        <ModelsSection merged={merged} metric={metric} columns={wide ? 2 : 1} />
+                        <ModelsSection
+                          merged={merged}
+                          metric={metric}
+                          columns={wide ? 2 : 1}
+                          grouping={grouping}
+                          accountName={accountName}
+                        />
                       </UsageUpdating>
                     </>
                   )}
@@ -562,14 +615,33 @@ function ProviderSection(props: {
   readonly metric: UsageChartMetric;
   /** Drops the share bar so the list fits beside the chart. */
   readonly compact: boolean;
+  readonly grouping: LimitGrouping;
+  readonly accountName: (account: AccountTotals) => string | null;
 }) {
   const { merged, metric } = props;
   const colors = useProviderColors();
   const gt = useGT();
   if (merged.providers.length === 0) return null;
 
+  const rows =
+    props.grouping === "account"
+      ? merged.accounts.map((account) => {
+          const name = props.accountName(account);
+          return {
+            ...account,
+            label:
+              name === null
+                ? PROVIDER_LABEL[account.provider]
+                : `${PROVIDER_LABEL[account.provider]} · ${name}`,
+          };
+        })
+      : merged.providers.map((provider) => ({
+          ...provider,
+          key: provider.provider,
+          label: PROVIDER_LABEL[provider.provider],
+        }));
   // Hermes lacks toSorted.
-  const ordered = [...merged.providers].sort((a, b) =>
+  const ordered = [...rows].sort((a, b) =>
     metric === "cost" ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens,
   );
 
@@ -579,24 +651,27 @@ function ProviderSection(props: {
         const share = metric === "cost" ? provider.costShare : provider.tokenShare;
         return (
           <View
-            key={provider.provider}
+            key={provider.key}
             className={cn(
               props.compact ? "gap-0.5 px-4 py-3" : "gap-2 p-4",
               index > 0 && "border-t border-border-subtle",
             )}
           >
             <View className="flex-row items-baseline justify-between gap-3">
-              <View className="flex-row items-center gap-2">
+              <View className="shrink flex-row items-center gap-2">
                 <View
                   className="size-2.5 rounded-full"
                   style={{ backgroundColor: colors[provider.provider] }}
                 />
                 <Text
                   className={
-                    props.compact ? "text-base text-foreground" : "text-lg text-foreground"
+                    props.compact
+                      ? "shrink text-base text-foreground"
+                      : "shrink text-lg text-foreground"
                   }
+                  numberOfLines={1}
                 >
-                  {PROVIDER_LABEL[provider.provider]}
+                  {provider.label}
                 </Text>
               </View>
               <Text
@@ -838,14 +913,19 @@ function ModelsSection(props: {
   readonly merged: MergedUsage;
   readonly metric: UsageChartMetric;
   readonly columns: 1 | 2;
+  readonly grouping: LimitGrouping;
+  readonly accountName: (account: AccountTotals) => string | null;
 }) {
   const { merged, metric } = props;
   const colors = useProviderColors();
   const gt = useGT();
   if (merged.models.length === 0) return null;
 
+  const accountsByKey = new Map(merged.accounts.map((account) => [account.key, account]));
+  const models: readonly (ModelTotals & { readonly accountKey?: string })[] =
+    props.grouping === "account" ? merged.accountModels : merged.models;
   // Hermes lacks toSorted.
-  const ordered = [...merged.models].sort((a, b) =>
+  const ordered = [...models].sort((a, b) =>
     metric === "cost"
       ? b.costUsd - a.costUsd || b.totalTokens - a.totalTokens
       : b.totalTokens - a.totalTokens || b.costUsd - a.costUsd,
@@ -854,53 +934,61 @@ function ModelsSection(props: {
   return (
     <SettingsSection title={gt("By model")}>
       <View className="flex-row flex-wrap">
-        {ordered.map((model, index) => (
-          <View
-            key={`${model.provider}:${model.model}`}
-            className={cn(
-              "flex-row items-center gap-3 p-4",
-              index >= props.columns && "border-t border-border-subtle",
-              index % props.columns === 1 && "border-l border-border-subtle",
-            )}
-            style={{ width: `${100 / props.columns}%` }}
-          >
+        {ordered.map((model, index) => {
+          const account =
+            model.accountKey === undefined ? undefined : accountsByKey.get(model.accountKey);
+          const accountLabel = account === undefined ? null : props.accountName(account);
+          return (
             <View
-              className="size-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: colors[model.provider] }}
-            />
-            <View className="min-w-0 flex-1 gap-0.5">
-              <Text className="text-base text-foreground" numberOfLines={1}>
-                {model.model}
-              </Text>
-              <Text className="text-sm text-foreground-muted">
+              key={`${model.accountKey ?? ""}:${model.provider}:${model.model}`}
+              className={cn(
+                "flex-row items-center gap-3 p-4",
+                index >= props.columns && "border-t border-border-subtle",
+                index % props.columns === 1 && "border-l border-border-subtle",
+              )}
+              style={{ width: `${100 / props.columns}%` }}
+            >
+              <View
+                className="size-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: colors[model.provider] }}
+              />
+              <View className="min-w-0 flex-1 gap-0.5">
+                <Text className="text-base text-foreground" numberOfLines={1}>
+                  {model.model}
+                  {accountLabel === null ? null : (
+                    <Text className="text-foreground-muted"> · {accountLabel}</Text>
+                  )}
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  {metric === "tokens"
+                    ? isModelCostUnknown(model)
+                      ? gt("{share} of tokens · no known rates", {
+                          share: formatPercent(model.tokenShare),
+                        })
+                      : gt("{share} of tokens · {cost}", {
+                          share: formatPercent(model.tokenShare),
+                          cost: formatUsd(model.costUsd),
+                        })
+                    : isModelCostUnknown(model)
+                      ? gt("no known rates · {tokens} tokens", {
+                          tokens: formatTokens(model.totalTokens),
+                        })
+                      : gt("{share} of cost · {tokens} tokens", {
+                          share: formatPercent(model.costShare),
+                          tokens: formatTokens(model.totalTokens),
+                        })}
+                </Text>
+              </View>
+              <Text className="text-base tabular-nums text-foreground">
                 {metric === "tokens"
-                  ? isModelCostUnknown(model)
-                    ? gt("{share} of tokens · no known rates", {
-                        share: formatPercent(model.tokenShare),
-                      })
-                    : gt("{share} of tokens · {cost}", {
-                        share: formatPercent(model.tokenShare),
-                        cost: formatUsd(model.costUsd),
-                      })
+                  ? formatTokens(model.totalTokens)
                   : isModelCostUnknown(model)
-                    ? gt("no known rates · {tokens} tokens", {
-                        tokens: formatTokens(model.totalTokens),
-                      })
-                    : gt("{share} of cost · {tokens} tokens", {
-                        share: formatPercent(model.costShare),
-                        tokens: formatTokens(model.totalTokens),
-                      })}
+                    ? gt("Unpriced", { $context: "model with no known price" })
+                    : formatUsd(model.costUsd)}
               </Text>
             </View>
-            <Text className="text-base tabular-nums text-foreground">
-              {metric === "tokens"
-                ? formatTokens(model.totalTokens)
-                : isModelCostUnknown(model)
-                  ? gt("Unpriced", { $context: "model with no known price" })
-                  : formatUsd(model.costUsd)}
-            </Text>
-          </View>
-        ))}
+          );
+        })}
       </View>
     </SettingsSection>
   );

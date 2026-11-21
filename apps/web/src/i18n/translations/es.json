@@ -12191,5 +12191,11 @@
   "27d76249d09eb69f": "Guía de revisión lista",
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
+  "56c4a46396130793": "Agrupado",
+  "547a171f9990d7bf": "Por cuenta",
+  "5cc31e538216be91": "Agrupación del uso",
+  "ab92c799c5653775": "{account} · haz clic para ver todas las cuentas",
+  "b37f468354266f5e": "{account} · haz clic para ver solo esta cuenta",
+  "ebe28994a2ba997c": "Desglose de uso por modelo"
 }

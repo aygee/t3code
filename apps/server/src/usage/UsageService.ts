@@ -393,15 +393,31 @@ export const make = Effect.gen(function* () {
     const dirs: Array<TranscriptSource> = [];
     const pending: Array<ScannedDir> = [];
     const seen = new Set<string>();
+    const instanceIds = new Map<string, Array<ProviderInstanceId>>();
+    const claim = (key: string, instanceId: ProviderInstanceId | null) => {
+      if (instanceId === null) return;
+      const ids = instanceIds.get(key) ?? [];
+      if (!ids.includes(instanceId)) ids.push(instanceId);
+      instanceIds.set(key, ids);
+    };
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
-      const directories = yield* Effect.forEach(
-        yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance, { awaitRefresh }),
+      const instances = yield* usageInstances(driver, settings);
+      const directories = yield* Effect.forEach(instances, (instance) =>
+        reader.directories(instance, { awaitRefresh }).pipe(
+          Effect.map((found) =>
+            found.map((entry) => ({
+              ...entry,
+              // The driver default home is not an instance, even when it shares the driver's id.
+              instanceId: instance.configured ? instance.instanceId : null,
+            })),
+          ),
+        ),
       );
-      for (const { dir: directory, fileName, refreshing } of directories.flat()) {
+      for (const { dir: directory, fileName, refreshing, instanceId } of directories.flat()) {
         if (refreshing) {
           const key = `${provider}\0${directory}`;
+          claim(key, instanceId);
           if (seen.has(key)) continue;
           seen.add(key);
           pending.push({ provider, dir: directory, volumeId: "", files: [], refreshing });
@@ -431,6 +447,7 @@ export const make = Effect.gen(function* () {
           cacheDirty = true;
         }
         const key = `${provider}\0${dir}`;
+        claim(key, instanceId);
         if (seen.has(key)) continue;
         seen.add(key);
         const sourceId = yield* physicalSourceId(dir);
@@ -444,7 +461,7 @@ export const make = Effect.gen(function* () {
         });
       }
     }
-    return { dirs, pending };
+    return { dirs, pending, instanceIds };
   });
 
   // Share first loads so concurrent readers cannot scan against a still-empty cache.
@@ -904,9 +921,9 @@ export const make = Effect.gen(function* () {
         ],
         { concurrency: 2 },
       );
-      return { scannedDirs: scanned, fromMemory };
+      return { scannedDirs: scanned, fromMemory, instanceIds: resolved.instanceIds };
     });
-    const [{ scannedDirs, fromMemory }] = yield* Effect.all(
+    const [{ scannedDirs, fromMemory, instanceIds }] = yield* Effect.all(
       [collect, provisional ? Effect.void : ensureRates(false)],
       { concurrency: 2 },
     );
@@ -1112,6 +1129,7 @@ export const make = Effect.gen(function* () {
 
       const sourceMessage =
         message ?? (files === null ? "No transcript directory on this environment." : null);
+      const sourceInstanceIds = instanceIds.get(`${provider}\0${dir}`);
       sources.push({
         fingerprint: {
           hostId: sourceHostId ?? hostId,
@@ -1120,6 +1138,7 @@ export const make = Effect.gen(function* () {
           volumeId,
           ...(physicalSourceId === undefined ? {} : { physicalSourceId }),
         },
+        ...(sourceInstanceIds === undefined ? {} : { instanceIds: sourceInstanceIds }),
         status:
           files === null && scannedFiles === 0
             ? "missing"

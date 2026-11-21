@@ -1,5 +1,5 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
-import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
+import { type LimitGrouping, usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -25,8 +25,10 @@ import {
 import {
   isCompatibleUsageContractVersion,
   isModelCostUnknown,
+  type AccountTotals,
   type DailyTotals,
   type HourlyTotals,
+  type ModelTotals,
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
@@ -79,7 +81,8 @@ import {
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
-import { UsageProviderChart } from "./UsageProviderChart";
+import { providerSeries, UsageProviderChart, type ChartSeries } from "./UsageProviderChart";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
@@ -96,6 +99,7 @@ import {
   type UsageMetric,
 } from "./usageShortcuts";
 import {
+  accountColor,
   PROVIDER_ORDER,
   PROVIDER_PRESENTATION,
   providersWithUsage,
@@ -208,6 +212,7 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
+  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const {
@@ -217,8 +222,22 @@ export function UsagePage() {
     shown,
     isPartial,
     refresh,
-  } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
+  } = useUsage(
+    window,
+    selectedEnvironmentIds,
+    hiddenProviders,
+    // Only the by-account list can pick an account, so pooled views stay whole.
+    preferences.grouping === "account" && selectedAccount !== null ? selectedAccount : undefined,
+  );
   const merged = shown?.merged ?? answeredUsage;
+  // A window without the picked account would leave no row to unpick it.
+  if (
+    selectedAccount !== null &&
+    merged.accounts.length > 0 &&
+    !merged.accounts.some((account) => account.key === selectedAccount)
+  ) {
+    setSelectedAccount(null);
+  }
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
@@ -247,6 +266,23 @@ export function UsagePage() {
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
     });
+  };
+  const grouping = preferences.grouping ?? "pooled";
+  const groupingOptions = [
+    { value: "pooled", label: gt("Pooled") },
+    { value: "account", label: gt("By account") },
+  ] as const;
+  const selectGrouping = (next: LimitGrouping) => updatePreferences({ grouping: next });
+  // Accounts are transcript directories; a configured instance names one better than its path.
+  const accountName = (account: AccountTotals): string | null => {
+    const providers =
+      account.environmentId === null
+        ? []
+        : (presentationsWithProviders.get(account.environmentId)?.serverConfig?.providers ?? []);
+    const instanceId = account.instanceIds[0];
+    if (instanceId === undefined) return account.homePath;
+    const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+    return provider?.displayName?.trim() || instanceId;
   };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
@@ -406,8 +442,8 @@ export function UsagePage() {
         </span>
       ) : null}
       <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
-        {/* Limits are always current, so they have no period. The period sits before the metric
-            tabs so dropping it never moves them. */}
+        {/* Limits are always current, so they have no period. The period sits before the grouping
+            and metric tabs so dropping it never moves them. */}
         {showingLimits ? null : (
           <ToggleGroup
             aria-label={gt("Usage period")}
@@ -425,6 +461,21 @@ export function UsagePage() {
             ))}
           </ToggleGroup>
         )}
+        <ToggleGroup
+          aria-label={gt("Usage grouping")}
+          variant="segmented"
+          value={[grouping]}
+          onValueChange={(next) => {
+            const value = next[0];
+            if (value === "pooled" || value === "account") selectGrouping(value);
+          }}
+        >
+          {groupingOptions.map((option) => (
+            <Toggle key={option.value} value={option.value}>
+              {option.label}
+            </Toggle>
+          ))}
+        </ToggleGroup>
         <ToggleGroup
           aria-label={gt("Usage metric")}
           variant="segmented"
@@ -475,6 +526,30 @@ export function UsagePage() {
             </SelectPopup>
           </Select>
         )}
+        <Select
+          value={grouping}
+          onValueChange={(value) => {
+            if (value === "pooled" || value === "account") selectGrouping(value);
+          }}
+        >
+          <SelectTrigger
+            aria-label={gt("Usage grouping")}
+            size="compact"
+            variant="ghost"
+            className="w-auto min-w-0"
+          >
+            <SelectValue>
+              {groupingOptions.find((option) => option.value === grouping)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {groupingOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
         <Select
           value={metric}
           onValueChange={(value) => {
@@ -535,6 +610,7 @@ export function UsagePage() {
               <UsageLimitsSection
                 selectedEnvironmentIds={selectedEnvironmentIds}
                 hiddenProviders={hiddenProviders}
+                grouping={grouping}
                 now={limitsNow}
               />
             ) : shown === null ? (
@@ -565,6 +641,10 @@ export function UsagePage() {
                 hiddenProviders={hiddenProviders}
                 refreshingUsage={refreshingUsage}
                 showChatGptSharing={showChatGptSharing}
+                grouping={grouping}
+                accountName={accountName}
+                selectedAccount={grouping === "account" ? selectedAccount : null}
+                onSelectAccount={setSelectedAccount}
                 onSelectModel={selectUsageModel}
               />
             )}
@@ -601,6 +681,35 @@ export function UsagePage() {
   );
 }
 
+function BreakdownColumnHeading({ column }: { readonly column: SummaryRow }) {
+  if (column.name === null) return PROVIDER_PRESENTATION[column.provider].label;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <ProviderMark provider={column.provider} className="size-3" />
+      {column.name}
+    </span>
+  );
+}
+
+interface SummaryRow {
+  readonly key: string;
+  readonly provider: UsageProviderKind;
+  readonly name: string | null;
+  readonly color: string;
+  /** Rows that are accounts can filter the page to that account. */
+  readonly isAccount: boolean;
+  readonly totals: {
+    readonly costUsd: number;
+    readonly totalTokens: number;
+    readonly sessions: number;
+    readonly costShare: number;
+    readonly tokenShare: number;
+  } | null;
+  readonly periodTotals: (
+    period: DailyTotals | HourlyTotals,
+  ) => { readonly costUsd: number; readonly totalTokens: number } | undefined;
+}
+
 function UsageOverview({
   merged,
   shownWindow,
@@ -613,6 +722,10 @@ function UsageOverview({
   hiddenProviders,
   refreshingUsage,
   showChatGptSharing,
+  grouping,
+  accountName,
+  selectedAccount,
+  onSelectAccount,
   onSelectModel,
 }: {
   readonly merged: MergedUsage;
@@ -626,6 +739,10 @@ function UsageOverview({
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly refreshingUsage: boolean;
   readonly showChatGptSharing: boolean;
+  readonly grouping: LimitGrouping;
+  readonly accountName: (account: AccountTotals) => string | null;
+  readonly selectedAccount: string | null;
+  readonly onSelectAccount: (key: string | null) => void;
   readonly onSelectModel: (key: string) => void;
 }) {
   const gt = useGT();
@@ -665,11 +782,93 @@ function UsageOverview({
     breakdown === "model" && metric === "tokens"
       ? sortModelsByTokens(merged.models)
       : merged.models;
+  const accountModelByKey = new Map(
+    merged.accountModels.map((model) => [
+      `${model.accountKey}\u0000${model.provider}:${model.model}`,
+      model,
+    ]),
+  );
   const breakdownPeak = breakdownModels.reduce(
     (peak, model) => Math.max(peak, metric === "tokens" ? model.totalTokens : model.costUsd),
     0,
   );
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
+  const field = metric === "cost" ? "costUsd" : "totalTokens";
+  const summaryRows: readonly SummaryRow[] =
+    grouping === "account"
+      ? rankedProviders.flatMap((provider): SummaryRow[] => {
+          const accounts = merged.accounts
+            .filter((account) => account.provider === provider)
+            .toSorted((left, right) => right[field] - left[field]);
+          if (accounts.length === 0) {
+            return [
+              {
+                key: provider,
+                provider,
+                name: null,
+                color: PROVIDER_PRESENTATION[provider].color,
+                isAccount: false,
+                totals: null,
+                periodTotals: (period) => period.byProvider.get(provider),
+              },
+            ];
+          }
+          // Shades follow the account's rank in its provider, which stays put while filtered.
+          const shadeOrder = accounts.map((account) => account.key).toSorted();
+          return accounts.map((account) => ({
+            key: account.key,
+            provider,
+            name: accountName(account),
+            color: accountColor(provider, shadeOrder.indexOf(account.key)),
+            isAccount: true,
+            totals: account,
+            periodTotals: (period) => period.byAccount.get(account.key),
+          }));
+        })
+      : rankedProviders.map((provider) => ({
+          key: provider,
+          provider,
+          name: null,
+          color: PROVIDER_PRESENTATION[provider].color,
+          isAccount: false,
+          totals: merged.providers.find((entry) => entry.provider === provider) ?? null,
+          periodTotals: (period) => period.byProvider.get(provider),
+        }));
+  const filteredRows =
+    selectedAccount === null
+      ? summaryRows
+      : summaryRows.filter((row) => row.key === selectedAccount);
+  // The time table keeps the fixed provider order when pooled so its columns never jump.
+  const breakdownColumns: readonly SummaryRow[] =
+    grouping === "account"
+      ? filteredRows
+      : activeProviders.map((provider) => ({
+          key: provider,
+          provider,
+          name: null,
+          color: PROVIDER_PRESENTATION[provider].color,
+          isAccount: false,
+          totals: null,
+          periodTotals: (period) => period.byProvider.get(provider),
+        }));
+  const chartSeries: readonly ChartSeries[] =
+    grouping === "account"
+      ? breakdownColumns.map((row) => ({
+          key: row.key,
+          provider: row.provider,
+          label: row.name ?? PROVIDER_PRESENTATION[row.provider].label,
+          color: row.color,
+          totals: (period) => row.periodTotals(period),
+        }))
+      : providerSeries(activeProviders);
+  // By account, the model table splits each model's cost into one column per account, like the time table.
+  const modelColumns = grouping === "account" ? breakdownColumns : [];
+  const columnModel = (column: SummaryRow, model: ModelTotals): ModelTotals | undefined =>
+    column.isAccount
+      ? accountModelByKey.get(`${column.key}\u0000${model.provider}:${model.model}`)
+      : column.provider === model.provider
+        ? model
+        : undefined;
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -730,8 +929,7 @@ function UsageOverview({
             </div>
           ) : null}
 
-          {rankedProviders.map((provider) => {
-            const totals = merged.providers.find((entry) => entry.provider === provider);
+          {summaryRows.map(({ key, provider, name, color, isAccount, totals }) => {
             const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
             const providerSessions = totals?.sessions ?? 0;
             const sessionLabel = gt(
@@ -740,20 +938,55 @@ function UsageOverview({
             );
             const providerLoading = loadingProviders.has(provider);
             const awaitingData = providerLoading && !providersWithData.has(provider);
+            const label =
+              name === null
+                ? PROVIDER_PRESENTATION[provider].label
+                : `${PROVIDER_PRESENTATION[provider].label} · ${name}`;
+            const selected = selectedAccount === key;
             return (
-              <div key={provider} className="flex flex-col gap-1">
+              <div
+                key={key}
+                className={cn(
+                  "relative -mx-2 flex flex-col gap-1 rounded-lg px-2 py-1 transition-colors",
+                  isAccount && "hover:bg-muted/50 has-focus-visible:bg-muted/50",
+                  selected && "bg-muted",
+                  selectedAccount !== null && !selected && "opacity-60",
+                )}
+              >
                 <dl className="flex items-baseline justify-between gap-4">
                   <dt className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                     <span
                       aria-hidden
                       className="size-2 shrink-0 rounded-full"
-                      style={{
-                        backgroundColor: PROVIDER_PRESENTATION[provider].color,
-                      }}
+                      style={{ backgroundColor: color }}
                     />
                     <ProviderMark provider={provider} className="size-4" />
                     <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className="truncate">{PROVIDER_PRESENTATION[provider].label}</span>
+                      {isAccount ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                aria-pressed={selected}
+                                onClick={() => onSelectAccount(selected ? null : key)}
+                                className="truncate text-left outline-none after:absolute after:inset-0"
+                              />
+                            }
+                          >
+                            {label}
+                          </TooltipTrigger>
+                          <TooltipPopup side="top">
+                            {selected
+                              ? gt("{account} · click to show all accounts", { account: label })
+                              : gt("{account} · click to show only this account", {
+                                  account: label,
+                                })}
+                          </TooltipPopup>
+                        </Tooltip>
+                      ) : (
+                        <span className="truncate">{label}</span>
+                      )}
                       <span
                         className={cn(
                           "shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums",
@@ -811,7 +1044,7 @@ function UsageOverview({
                 : gt("Daily cost")}
           </h2>
           <UsageProviderChart
-            providers={activeProviders}
+            series={chartSeries}
             loadingProviders={chartLoadingProviders}
             days={days}
             daily={merged.daily}
@@ -917,89 +1150,122 @@ function UsageOverview({
         </div>
 
         {breakdown === "model" ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground">
-                <th className="py-2 pr-3 pl-2 text-left font-normal">#</th>
-                <th className="w-full py-2 text-left font-normal">
-                  <T>Model</T>
-                </th>
-                <th className="py-2 pl-6 font-normal">
-                  <T>Cost</T>
-                </th>
-                <th className="hidden py-2 pl-6 font-normal sm:table-cell">
-                  <T context="column heading, percentage share">Share</T>
-                </th>
-                <th className="py-2 pr-2 pl-6 font-normal">
-                  <T>Tokens</T>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownModels.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
-                    <T>No activity in this window.</T>
-                  </td>
+          <div
+            className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            role="region"
+            aria-label={gt("Usage breakdown by model")}
+            tabIndex={modelColumns.length > 0 ? 0 : undefined}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-right text-xs text-muted-foreground">
+                  <th className="py-2 pr-3 pl-2 text-left font-normal">#</th>
+                  <th className="w-full py-2 text-left font-normal">
+                    <T>Model</T>
+                  </th>
+                  {modelColumns.map((column) => (
+                    <th key={column.key} className="py-2 pl-6 font-normal whitespace-nowrap">
+                      <BreakdownColumnHeading column={column} />
+                    </th>
+                  ))}
+                  <th className="py-2 pl-6 font-normal">
+                    {modelColumns.length > 0 ? <T>Total</T> : <T>Cost</T>}
+                  </th>
+                  <th className="hidden py-2 pl-6 font-normal sm:table-cell">
+                    <T context="column heading, percentage share">Share</T>
+                  </th>
+                  <th className="py-2 pr-2 pl-6 font-normal">
+                    <T>Tokens</T>
+                  </th>
                 </tr>
-              ) : (
-                breakdownModels.map((model, index) => {
-                  const key = `${model.provider}:${model.model}`;
-                  const value = metric === "tokens" ? model.totalTokens : model.costUsd;
-                  const hasBar = value > 0 && breakdownPeak > 0;
-                  const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
-                  const rowFigures = figureClass(loadingProviders.has(model.provider));
-                  return (
-                    <tr
-                      key={key}
-                      className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
+              </thead>
+              <tbody>
+                {breakdownModels.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={modelColumns.length + 5}
+                      className="py-6 text-center text-muted-foreground"
                     >
-                      <td className="py-2.5 pr-3 pl-2 text-left text-xs">{index + 1}</td>
-                      <td className="py-2.5 text-left whitespace-normal">
-                        <button
-                          type="button"
-                          onClick={() => onSelectModel(key)}
-                          className={cn(
-                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
-                            !hasBar && "py-1",
+                      <T>No activity in this window.</T>
+                    </td>
+                  </tr>
+                ) : (
+                  breakdownModels.map((model, index) => {
+                    const key = `${model.provider}:${model.model}`;
+                    const value = metric === "tokens" ? model.totalTokens : model.costUsd;
+                    const hasBar = value > 0 && breakdownPeak > 0;
+                    const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
+                    const rowFigures = figureClass(loadingProviders.has(model.provider));
+                    return (
+                      <tr
+                        key={key}
+                        className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
+                      >
+                        <td className="py-2.5 pr-3 pl-2 text-left text-xs">{index + 1}</td>
+                        <td className="py-2.5 text-left whitespace-normal">
+                          <button
+                            type="button"
+                            onClick={() => onSelectModel(key)}
+                            className={cn(
+                              "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
+                              !hasBar && "py-1",
+                            )}
+                          >
+                            <ProviderMark provider={model.provider} className="size-3.5" />
+                            {model.model}
+                          </button>
+                          {hasBar ? (
+                            <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
+                              <div
+                                className="h-full rounded-full"
+                                style={{
+                                  width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
+                                  backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
+                                }}
+                              />
+                            </div>
+                          ) : null}
+                        </td>
+                        {modelColumns.map((column) => {
+                          const part = columnModel(column, model);
+                          return (
+                            <td
+                              key={column.key}
+                              className={cn(
+                                "py-2.5 pl-6",
+                                figureClass(loadingProviders.has(column.provider)),
+                              )}
+                            >
+                              {part !== undefined && isModelCostUnknown(part) ? (
+                                <T>Unpriced</T>
+                              ) : (
+                                formatUsd(part?.costUsd ?? 0, locale)
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
+                          {isModelCostUnknown(model) ? (
+                            <span className="text-muted-foreground">
+                              <T>Unpriced</T>
+                            </span>
+                          ) : (
+                            formatUsd(model.costUsd, locale)
                           )}
-                        >
-                          <ProviderMark provider={model.provider} className="size-3.5" />
-                          {model.model}
-                        </button>
-                        {hasBar ? (
-                          <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
-                                backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
-                              }}
-                            />
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
-                        {isModelCostUnknown(model) ? (
-                          <span className="text-muted-foreground">
-                            <T>Unpriced</T>
-                          </span>
-                        ) : (
-                          formatUsd(model.costUsd, locale)
-                        )}
-                      </td>
-                      <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
-                        {share === null ? "" : formatPercent(share)}
-                      </td>
-                      <td className={cn("py-2.5 pr-2 pl-6", rowFigures)}>
-                        {formatTokens(model.totalTokens)}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                        </td>
+                        <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
+                          {share === null ? "" : formatPercent(share)}
+                        </td>
+                        <td className={cn("py-2.5 pr-2 pl-6", rowFigures)}>
+                          {formatTokens(model.totalTokens)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div
             className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -1014,9 +1280,9 @@ function UsageOverview({
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="py-2 pl-2 font-normal">{shownHourly ? gt("Hour") : gt("Day")}</th>
-                  {activeProviders.map((provider) => (
-                    <th key={provider} className="py-2 pl-4 text-right font-normal">
-                      {PROVIDER_PRESENTATION[provider].label}
+                  {breakdownColumns.map((column) => (
+                    <th key={column.key} className="py-2 pl-4 text-right font-normal">
+                      <BreakdownColumnHeading column={column} />
                     </th>
                   ))}
                   <th className="py-2 pl-4 text-right font-normal">
@@ -1031,7 +1297,7 @@ function UsageOverview({
                 {breakdownPeriods.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={activeProviders.length + 3}
+                      colSpan={breakdownColumns.length + 3}
                       className="py-6 text-center text-muted-foreground"
                     >
                       <T>No activity in this window.</T>
@@ -1048,15 +1314,15 @@ function UsageOverview({
                           ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12, locale)
                           : formatDayShort(period.day, locale)}
                       </td>
-                      {activeProviders.map((provider) => (
+                      {breakdownColumns.map((column) => (
                         <td
-                          key={provider}
+                          key={column.key}
                           className={cn(
                             "py-2 pl-4 text-right text-muted-foreground tabular-nums",
-                            figureClass(loadingProviders.has(provider)),
+                            figureClass(loadingProviders.has(column.provider)),
                           )}
                         >
-                          {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0, locale)}
+                          {formatUsd(column.periodTotals(period)?.costUsd ?? 0, locale)}
                         </td>
                       ))}
                       <td

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildPeriodColumns } from "./UsageProviderChart";
+import { buildPeriodColumns, providerSeries } from "./UsageProviderChart";
+import { PROVIDER_ORDER } from "./usageProviders";
 
 describe("buildPeriodColumns", () => {
   const days = ["2026-08-01", "2026-08-02", "2026-08-03"];
@@ -17,6 +18,7 @@ describe("buildPeriodColumns", () => {
           ["pi" as const, { costUsd: 5, totalTokens: 50 }],
           ["muse" as const, { costUsd: 7, totalTokens: 70 }],
         ]),
+        byAccount: new Map(),
       },
     ],
     [
@@ -26,22 +28,23 @@ describe("buildPeriodColumns", () => {
         costUsd: 5,
         totalTokens: 50,
         byProvider: new Map([["claude" as const, { costUsd: 5, totalTokens: 50 }]]),
+        byAccount: new Map(),
       },
     ],
   ]);
 
   it("keeps band values absolute rather than cumulative", () => {
-    const [first] = buildPeriodColumns(days, byDay, "cost");
+    const [first] = buildPeriodColumns(days, byDay, providerSeries(PROVIDER_ORDER), "cost");
 
     expect(first?.bands).toEqual([
-      { provider: "codex", value: 10 },
-      { provider: "claude", value: 20 },
-      { provider: "grok", value: 0 },
-      { provider: "cursor", value: 0 },
-      { provider: "opencode", value: 0 },
-      { provider: "antigravity", value: 0 },
-      { provider: "pi", value: 5 },
-      { provider: "muse", value: 7 },
+      { key: "codex", value: 10 },
+      { key: "claude", value: 20 },
+      { key: "grok", value: 0 },
+      { key: "cursor", value: 0 },
+      { key: "opencode", value: 0 },
+      { key: "antigravity", value: 0 },
+      { key: "pi", value: 5 },
+      { key: "muse", value: 7 },
     ]);
   });
 });

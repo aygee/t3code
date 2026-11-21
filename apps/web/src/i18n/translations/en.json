@@ -12205,5 +12205,11 @@
   "27d76249d09eb69f": "Review guide ready",
   "faa3bb26abb39c93": "Review guide failed",
   "b7df38b7d8792d78": "Open guide",
-  "9e91e9a77b664e4e": "Could not start a review guide"
+  "9e91e9a77b664e4e": "Could not start a review guide",
+  "56c4a46396130793": "Pooled",
+  "547a171f9990d7bf": "By account",
+  "5cc31e538216be91": "Usage grouping",
+  "ab92c799c5653775": "{account} · click to show all accounts",
+  "b37f468354266f5e": "{account} · click to show only this account",
+  "ebe28994a2ba997c": "Usage breakdown by model"
 }

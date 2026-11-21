@@ -25,6 +25,20 @@ export interface ProviderTotals {
   readonly tokenShare: number;
 }
 
+/** One transcript directory, which is one subscription account for providers like Claude. */
+export interface AccountTotals {
+  readonly key: string;
+  readonly provider: UsageProviderKind;
+  readonly environmentId: EnvironmentId | null;
+  readonly homePath: string | null;
+  readonly instanceIds: readonly string[];
+  readonly costUsd: number;
+  readonly totalTokens: number;
+  readonly sessions: number;
+  readonly costShare: number;
+  readonly tokenShare: number;
+}
+
 export interface ModelTotals {
   readonly model: string;
   readonly provider: UsageProviderKind;
@@ -38,6 +52,11 @@ export interface ModelTotals {
   readonly tokenShare: number;
 }
 
+/** One model's usage within one account, for breakdowns grouped by account. */
+export interface AccountModelTotals extends ModelTotals {
+  readonly accountKey: string;
+}
+
 /** When every record lacks rates, costUsd is unknown and must not be displayed as a dollar figure. */
 export function isModelCostUnknown(model: ModelTotals): boolean {
   return model.records > 0 && model.unpricedRecords >= model.records;
@@ -48,6 +67,7 @@ export interface DailyTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly byProvider: ReadonlyMap<UsageProviderKind, { costUsd: number; totalTokens: number }>;
+  readonly byAccount: ReadonlyMap<string, { costUsd: number; totalTokens: number }>;
 }
 
 export interface HourlyTotals {
@@ -56,6 +76,7 @@ export interface HourlyTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly byProvider: ReadonlyMap<UsageProviderKind, { costUsd: number; totalTokens: number }>;
+  readonly byAccount: ReadonlyMap<string, { costUsd: number; totalTokens: number }>;
 }
 
 export interface CostQuality {
@@ -97,7 +118,9 @@ export interface MergedUsage {
   readonly records: number;
   readonly sessions: number;
   readonly providers: readonly ProviderTotals[];
+  readonly accounts: readonly AccountTotals[];
   readonly models: readonly ModelTotals[];
+  readonly accountModels: readonly AccountModelTotals[];
   readonly daily: readonly DailyTotals[];
   readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
@@ -163,7 +186,10 @@ function claimSources(
   environments: readonly EnvironmentUsage[],
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
 ): {
-  readonly ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>;
+  readonly ownerScanByFingerprint: ReadonlyMap<
+    string,
+    { readonly environment: EnvironmentUsage; readonly source: UsageSource }
+  >;
   readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, ReadonlySet<UsageBucket>>;
   readonly sessionsByFingerprint: ReadonlyMap<string, number>;
   readonly duplicates: readonly string[];
@@ -254,7 +280,25 @@ function ownedContribution(
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
+  readonly accountKey: (bucket: UsageBucket) => string;
 } {
+  // A bucket's directory names its account; old servers omit it when a provider has one directory.
+  const sourceKeyByPath = new Map<string, string>();
+  const pathsByProvider = new Map<UsageProviderKind, string[]>();
+  for (const source of environment.summary.sources) {
+    if (source.status === "missing") continue;
+    const { provider, resolvedHomePath } = source.fingerprint;
+    sourceKeyByPath.set(`${provider}\u0000${resolvedHomePath}`, sourceKey(source.fingerprint));
+    pathsByProvider.set(provider, [...(pathsByProvider.get(provider) ?? []), resolvedHomePath]);
+  }
+  const accountKey = (bucket: UsageBucket) => {
+    const paths = pathsByProvider.get(bucket.provider) ?? [];
+    const path = bucket.sourcePath ?? (paths.length === 1 ? paths[0] : undefined);
+    return (
+      (path === undefined ? undefined : sourceKeyByPath.get(`${bucket.provider}\u0000${path}`)) ??
+      `\u0000${bucket.provider}`
+    );
+  };
   const ownedProviders = new Set<UsageProviderKind>();
   const ownedSources = new Set<string>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
@@ -284,6 +328,7 @@ function ownedContribution(
           : ownedSources.has(`${bucket.provider}\u0000${bucket.sourcePath}`)),
     ),
     sessionsByProvider,
+    accountKey,
   };
 }
 
@@ -301,6 +346,67 @@ export function isCompatibleUsageContractVersion(version: number, expected: numb
   return version >= USAGE_MERGE_COMPATIBLE_SINCE && version <= expected;
 }
 
+interface ModelAccumulator {
+  model: string;
+  provider: UsageProviderKind;
+  costUsd: number;
+  totalTokens: number;
+  tokens: UsageTokenTotals;
+  records: number;
+  unpricedRecords: number;
+  unpricedTokens: number;
+}
+
+function emptyModel(bucket: UsageBucket): ModelAccumulator {
+  return {
+    model: bucket.model,
+    provider: bucket.provider,
+    costUsd: 0,
+    totalTokens: 0,
+    tokens: {
+      uncachedInputTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+    },
+    records: 0,
+    unpricedRecords: 0,
+    unpricedTokens: 0,
+  };
+}
+
+function addModelBucket(model: ModelAccumulator, bucket: UsageBucket, tokens: number): void {
+  model.costUsd += bucket.costUsd;
+  model.totalTokens += tokens;
+  model.tokens = {
+    uncachedInputTokens: model.tokens.uncachedInputTokens + bucket.totals.uncachedInputTokens,
+    cachedInputTokens: model.tokens.cachedInputTokens + bucket.totals.cachedInputTokens,
+    cacheCreationTokens: model.tokens.cacheCreationTokens + bucket.totals.cacheCreationTokens,
+    outputTokens: model.tokens.outputTokens + bucket.totals.outputTokens,
+    reasoningTokens: model.tokens.reasoningTokens + bucket.totals.reasoningTokens,
+  };
+  model.records += bucket.records;
+  model.unpricedRecords += bucket.unpricedRecords;
+  if (bucket.unpricedTokens !== undefined) {
+    model.unpricedTokens += bucket.unpricedTokens;
+  } else if (bucket.records > 0) {
+    model.unpricedTokens += (tokens * bucket.unpricedRecords) / bucket.records;
+  }
+}
+
+function addTotals(
+  totals: Map<string, { costUsd: number; totalTokens: number }>,
+  key: string,
+  costUsd: number,
+  tokens: number,
+): void {
+  const entry = totals.get(key) ?? { costUsd: 0, totalTokens: 0 };
+  entry.costUsd += costUsd;
+  entry.totalTokens += tokens;
+  totals.set(key, entry);
+}
+
 const EMPTY_MERGED: MergedUsage = {
   costUsd: 0,
   uncachedInputTokens: 0,
@@ -312,7 +418,9 @@ const EMPTY_MERGED: MergedUsage = {
   records: 0,
   sessions: 0,
   providers: [],
+  accounts: [],
   models: [],
+  accountModels: [],
   daily: [],
   hourly: [],
   costQuality: {
@@ -328,10 +436,16 @@ const EMPTY_MERGED: MergedUsage = {
   contractMismatches: [],
 };
 
+/**
+ * `accountKey` scopes every figure to one account except `providers` and `accounts`, which stay
+ * whole so a list of them can switch between accounts.
+ */
 export function mergeUsage(
   environments: readonly EnvironmentUsage[],
   expectedContractVersion: number,
+  options: { readonly accountKey?: string } = {},
 ): MergedUsage {
+  const { accountKey: accountFilter } = options;
   if (environments.length === 0) return EMPTY_MERGED;
 
   const current: EnvironmentUsage[] = [];
@@ -372,6 +486,8 @@ export function mergeUsage(
   let cacheSavingsUsd = 0;
   let providerReportedRecords = 0;
   let unpricedRecords = 0;
+  let allCostUsd = 0;
+  let allTokens = 0;
   const categoryCost = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
   const speedCost = { fast: 0, ultrafast: 0, premium: 0 };
 
@@ -379,24 +495,19 @@ export function mergeUsage(
     UsageProviderKind,
     { costUsd: number; totalTokens: number; records: number; sessions: number }
   >();
-  const modelAccumulator = new Map<
+  const accountAccumulator = new Map<
     string,
-    {
-      provider: UsageProviderKind;
-      costUsd: number;
-      totalTokens: number;
-      tokens: UsageTokenTotals;
-      records: number;
-      unpricedRecords: number;
-      unpricedTokens: number;
-    }
+    { provider: UsageProviderKind; costUsd: number; totalTokens: number }
   >();
+  const modelAccumulator = new Map<string, ModelAccumulator>();
+  const accountModelAccumulator = new Map<string, ModelAccumulator & { accountKey: string }>();
   const dailyAccumulator = new Map<
     string,
     {
       costUsd: number;
       totalTokens: number;
       byProvider: Map<UsageProviderKind, { costUsd: number; totalTokens: number }>;
+      byAccount: Map<string, { costUsd: number; totalTokens: number }>;
     }
   >();
   const hourlyAccumulator = new Map<
@@ -407,12 +518,13 @@ export function mergeUsage(
       costUsd: number;
       totalTokens: number;
       byProvider: Map<UsageProviderKind, { costUsd: number; totalTokens: number }>;
+      byAccount: Map<string, { costUsd: number; totalTokens: number }>;
     }
   >();
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(
+    const { buckets, sessionsByProvider, accountKey } = ownedContribution(
       environment,
       ownerScanByFingerprint,
       supplementalBucketsByEnvironment.get(environment.environmentId) ?? new Set(),
@@ -422,7 +534,7 @@ export function mergeUsage(
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
-      sessions += providerSessions;
+      if (accountFilter === undefined) sessions += providerSessions;
       if (providerSessions === 0) continue;
       const provider = providerAccumulator.get(providerKind) ?? {
         costUsd: 0,
@@ -436,6 +548,29 @@ export function mergeUsage(
 
     for (const bucket of buckets) {
       const tokens = bucketTokens(bucket);
+      allCostUsd += bucket.costUsd;
+      allTokens += tokens;
+      const provider = providerAccumulator.get(bucket.provider) ?? {
+        costUsd: 0,
+        totalTokens: 0,
+        records: 0,
+        sessions: 0,
+      };
+      provider.costUsd += bucket.costUsd;
+      provider.totalTokens += tokens;
+      provider.records += bucket.records;
+      providerAccumulator.set(bucket.provider, provider);
+
+      const accountId = accountKey(bucket);
+      const account = accountAccumulator.get(accountId) ?? {
+        provider: bucket.provider,
+        costUsd: 0,
+        totalTokens: 0,
+      };
+      account.costUsd += bucket.costUsd;
+      account.totalTokens += tokens;
+      accountAccumulator.set(accountId, account);
+      if (accountFilter !== undefined && accountId !== accountFilter) continue;
 
       costUsd += bucket.costUsd;
       cacheSavingsUsd += bucket.cacheSavingsUsd;
@@ -457,55 +592,23 @@ export function mergeUsage(
       speedCost.ultrafast += bucket.ultrafastCostUsd ?? 0;
       speedCost.premium += bucket.speedPremiumUsd ?? 0;
 
-      const provider = providerAccumulator.get(bucket.provider) ?? {
-        costUsd: 0,
-        totalTokens: 0,
-        records: 0,
-        sessions: 0,
-      };
-      provider.costUsd += bucket.costUsd;
-      provider.totalTokens += tokens;
-      provider.records += bucket.records;
-      providerAccumulator.set(bucket.provider, provider);
-
       const modelKey = `${bucket.provider} ${bucket.model}`;
-      const model = modelAccumulator.get(modelKey) ?? {
-        provider: bucket.provider,
-        costUsd: 0,
-        totalTokens: 0,
-        tokens: {
-          uncachedInputTokens: 0,
-          cachedInputTokens: 0,
-          cacheCreationTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-        },
-        records: 0,
-        unpricedRecords: 0,
-        unpricedTokens: 0,
-      };
-      model.costUsd += bucket.costUsd;
-      model.totalTokens += tokens;
-      model.tokens = {
-        uncachedInputTokens: model.tokens.uncachedInputTokens + bucket.totals.uncachedInputTokens,
-        cachedInputTokens: model.tokens.cachedInputTokens + bucket.totals.cachedInputTokens,
-        cacheCreationTokens: model.tokens.cacheCreationTokens + bucket.totals.cacheCreationTokens,
-        outputTokens: model.tokens.outputTokens + bucket.totals.outputTokens,
-        reasoningTokens: model.tokens.reasoningTokens + bucket.totals.reasoningTokens,
-      };
-      model.records += bucket.records;
-      model.unpricedRecords += bucket.unpricedRecords;
-      if (bucket.unpricedTokens !== undefined) {
-        model.unpricedTokens += bucket.unpricedTokens;
-      } else if (bucket.records > 0) {
-        model.unpricedTokens += (tokens * bucket.unpricedRecords) / bucket.records;
-      }
+      const model = modelAccumulator.get(modelKey) ?? emptyModel(bucket);
+      addModelBucket(model, bucket, tokens);
       modelAccumulator.set(modelKey, model);
+      const accountModelKey = `${accountId}\u0000${modelKey}`;
+      const accountModel = accountModelAccumulator.get(accountModelKey) ?? {
+        ...emptyModel(bucket),
+        accountKey: accountId,
+      };
+      addModelBucket(accountModel, bucket, tokens);
+      accountModelAccumulator.set(accountModelKey, accountModel);
 
       const day = dailyAccumulator.get(bucket.day) ?? {
         costUsd: 0,
         totalTokens: 0,
         byProvider: new Map<UsageProviderKind, { costUsd: number; totalTokens: number }>(),
+        byAccount: new Map<string, { costUsd: number; totalTokens: number }>(),
       };
       day.costUsd += bucket.costUsd;
       day.totalTokens += tokens;
@@ -513,6 +616,7 @@ export function mergeUsage(
       dayProvider.costUsd += bucket.costUsd;
       dayProvider.totalTokens += tokens;
       day.byProvider.set(bucket.provider, dayProvider);
+      addTotals(day.byAccount, accountId, bucket.costUsd, tokens);
       dailyAccumulator.set(bucket.day, day);
 
       if (bucket.hourStart !== undefined) {
@@ -522,6 +626,7 @@ export function mergeUsage(
           costUsd: 0,
           totalTokens: 0,
           byProvider: new Map<UsageProviderKind, { costUsd: number; totalTokens: number }>(),
+          byAccount: new Map<string, { costUsd: number; totalTokens: number }>(),
         };
         hour.costUsd += bucket.costUsd;
         hour.totalTokens += tokens;
@@ -532,12 +637,14 @@ export function mergeUsage(
         hourProvider.costUsd += bucket.costUsd;
         hourProvider.totalTokens += tokens;
         hour.byProvider.set(bucket.provider, hourProvider);
+        addTotals(hour.byAccount, accountId, bucket.costUsd, tokens);
         hourlyAccumulator.set(bucket.hourStart, hour);
       }
     }
   }
 
   const totalTokens = uncachedInputTokens + cachedInputTokens + cacheCreationTokens + outputTokens;
+  if (accountFilter !== undefined) sessions = sessionsByFingerprint.get(accountFilter) ?? 0;
 
   const providers: ProviderTotals[] = [...providerAccumulator.entries()]
     .map(([provider, totals]) => ({
@@ -546,25 +653,47 @@ export function mergeUsage(
       totalTokens: totals.totalTokens,
       records: totals.records,
       sessions: totals.sessions,
-      costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
-      tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
+      costShare: allCostUsd === 0 ? 0 : totals.costUsd / allCostUsd,
+      tokenShare: allTokens === 0 ? 0 : totals.totalTokens / allTokens,
     }))
     .sort((a, b) => b.costUsd - a.costUsd);
 
-  const models: ModelTotals[] = [...modelAccumulator.entries()]
-    .map(([key, totals]) => ({
-      model: key.slice(key.indexOf(" ") + 1),
-      provider: totals.provider,
-      costUsd: totals.costUsd,
-      totalTokens: totals.totalTokens,
-      tokens: totals.tokens,
-      records: totals.records,
-      unpricedRecords: totals.unpricedRecords,
-      unpricedTokens: totals.unpricedTokens,
-      costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
-      tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
-    }))
+  const accounts: AccountTotals[] = [...accountAccumulator.entries()]
+    .map(([key, totals]) => {
+      const owner = ownerScanByFingerprint.get(key);
+      return {
+        key,
+        provider: totals.provider,
+        environmentId: owner?.environment.environmentId ?? null,
+        homePath: owner?.source.fingerprint.resolvedHomePath ?? null,
+        instanceIds: owner?.source.instanceIds ?? [],
+        costUsd: totals.costUsd,
+        totalTokens: totals.totalTokens,
+        sessions: sessionsByFingerprint.get(key) ?? 0,
+        costShare: allCostUsd === 0 ? 0 : totals.costUsd / allCostUsd,
+        tokenShare: allTokens === 0 ? 0 : totals.totalTokens / allTokens,
+      };
+    })
     .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);
+
+  const toModelTotals = ({ model, provider, ...totals }: ModelAccumulator): ModelTotals => ({
+    model,
+    provider,
+    costUsd: totals.costUsd,
+    totalTokens: totals.totalTokens,
+    tokens: totals.tokens,
+    records: totals.records,
+    unpricedRecords: totals.unpricedRecords,
+    unpricedTokens: totals.unpricedTokens,
+    costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
+    tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
+  });
+  const byCostThenTokens = (a: ModelTotals, b: ModelTotals) =>
+    b.costUsd - a.costUsd || b.totalTokens - a.totalTokens;
+  const models = [...modelAccumulator.values()].map(toModelTotals).sort(byCostThenTokens);
+  const accountModels: AccountModelTotals[] = [...accountModelAccumulator.values()]
+    .map((totals) => ({ ...toModelTotals(totals), accountKey: totals.accountKey }))
+    .sort(byCostThenTokens);
 
   const daily: DailyTotals[] = [...dailyAccumulator.entries()]
     .map(([day, totals]) => ({
@@ -572,6 +701,7 @@ export function mergeUsage(
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
       byProvider: totals.byProvider,
+      byAccount: totals.byAccount,
     }))
     .sort((a, b) => a.day.localeCompare(b.day));
 
@@ -590,7 +720,9 @@ export function mergeUsage(
     records,
     sessions,
     providers,
+    accounts,
     models,
+    accountModels,
     daily,
     hourly,
     costQuality: {

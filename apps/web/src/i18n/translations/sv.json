@@ -12203,5 +12203,11 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "56c4a46396130793": "Samlat",
+  "547a171f9990d7bf": "Per konto",
+  "5cc31e538216be91": "Gruppering av användning",
+  "ab92c799c5653775": "{account} · klicka för att visa alla konton",
+  "b37f468354266f5e": "{account} · klicka för att bara visa det här kontot",
+  "ebe28994a2ba997c": "Användning uppdelad per modell"
 }
