@@ -456,7 +456,11 @@ export interface LimitPoolWindow {
 }
 
 export interface LimitPool {
+  /** The driver when pooled, the account key when grouped by account. */
+  readonly key: string;
   readonly driver: ServerProvider["driver"];
+  /** The account a by-account pool shows, so it can be titled by that account. */
+  readonly account: LimitAccount | null;
   readonly accounts: readonly LimitAccount[];
   readonly windows: readonly LimitPoolWindow[];
 }
@@ -508,17 +512,22 @@ const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   other: 3,
 };
 
+export type LimitGrouping = "pooled" | "account";
+
 export function collectLimitPools(
   accounts: readonly LimitAccount[],
   now: number,
+  grouping: LimitGrouping = "pooled",
 ): readonly LimitPool[] {
-  const byDriver = new Map<ServerProvider["driver"], LimitAccount[]>();
+  const groups = new Map<string, LimitAccount[]>();
   for (const account of accounts) {
-    const list = byDriver.get(account.driver);
+    const key = grouping === "account" ? account.key : account.driver;
+    const list = groups.get(key);
     if (list) list.push(account);
-    else byDriver.set(account.driver, [account]);
+    else groups.set(key, [account]);
   }
-  return [...byDriver].map(([driver, members]) => {
+  return [...groups].map(([key, members]) => {
+    const driver = members[0]!.driver;
     const orderWindow = members
       .flatMap((account) => account.limits.windows)
       .sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind])[0];
@@ -537,7 +546,13 @@ export function collectLimitPools(
         accountSortName(left).localeCompare(accountSortName(right)) ||
         left.key.localeCompare(right.key),
     );
-    return { driver, accounts: sorted, windows: poolWindows(sorted, now) };
+    return {
+      key,
+      driver,
+      account: grouping === "account" ? members[0]! : null,
+      accounts: sorted,
+      windows: poolWindows(sorted, now),
+    };
   });
 }
 

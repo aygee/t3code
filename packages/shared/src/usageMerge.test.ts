@@ -2,6 +2,7 @@ import {
   USAGE_CONTRACT_VERSION,
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
+  type ProviderInstanceId,
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
@@ -45,6 +46,7 @@ function summary(
     volumeId?: string;
     physicalSourceId?: string;
     distinctSessions?: number;
+    instanceIds?: readonly string[];
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
 ): UsageSummary {
@@ -71,6 +73,9 @@ function summary(
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
       message: null,
+      ...(source.instanceIds === undefined
+        ? {}
+        : { instanceIds: source.instanceIds as readonly ProviderInstanceId[] }),
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -172,24 +177,59 @@ describe("mergeUsage", () => {
       provider: "opencode" as const,
       hostId: "host",
       homePath,
+      instanceIds: [homePath.slice(1)],
     });
     const usage = (sourcePath: string, costUsd: number) =>
       bucket({ provider: "opencode", sourcePath, costUsd });
-    const merged = mergeUsage(
-      [
-        environment(
-          "env-a",
-          summary([usage("/shared", 10), usage("/a", 2)], [source("/shared"), source("/a")]),
-        ),
-        environment(
-          "env-b",
-          summary([usage("/shared", 10), usage("/b", 3)], [source("/shared"), source("/b")]),
-        ),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
+    const environments = [
+      environment(
+        "env-a",
+        summary([usage("/shared", 10), usage("/a", 2)], [source("/shared"), source("/a")]),
+      ),
+      environment(
+        "env-b",
+        summary([usage("/shared", 10), usage("/b", 3)], [source("/shared"), source("/b")]),
+      ),
+    ];
+    const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
     expect(merged.costUsd).toBe(15);
     expect(merged.sessions).toBe(3);
+    expect(
+      merged.accounts.map((account) => [account.homePath, account.instanceIds, account.costUsd]),
+    ).toEqual([
+      ["/shared", ["shared"], 10],
+      ["/b", ["b"], 3],
+      ["/a", ["a"], 2],
+    ]);
+    const homePathByKey = new Map(
+      merged.accounts.map((account) => [account.key, account.homePath]),
+    );
+    expect(
+      merged.accountModels.map((model) => [homePathByKey.get(model.accountKey), model.costUsd]),
+    ).toEqual([
+      ["/shared", 10],
+      ["/b", 3],
+      ["/a", 2],
+    ]);
+    expect(
+      [...merged.daily[0]!.byAccount].map(([key, totals]) => [
+        homePathByKey.get(key),
+        totals.costUsd,
+      ]),
+    ).toEqual([
+      ["/shared", 10],
+      ["/a", 2],
+      ["/b", 3],
+    ]);
+
+    const onlyB = mergeUsage(environments, USAGE_CONTRACT_VERSION, {
+      accountKey: merged.accounts.find((account) => account.homePath === "/b")!.key,
+    });
+    expect([onlyB.costUsd, onlyB.sessions, onlyB.accountModels.length]).toEqual([3, 1, 1]);
+    expect(onlyB.daily.map((day) => day.costUsd)).toEqual([3]);
+    // The account list stays whole so it can switch accounts.
+    expect(onlyB.accounts).toEqual(merged.accounts);
+    expect(onlyB.providers).toEqual(merged.providers);
   });
 
   it("uses the newest scan when environments share the same transcript directory", () => {
@@ -705,5 +745,7 @@ describe("mergeUsage", () => {
 
     expect(merged.sessions).toBe(1);
     expect(merged.providers[0]?.sessions).toBe(1);
+    // Buckets without a directory belong to the provider's only one.
+    expect(merged.accounts).toMatchObject([{ homePath: "/a/.claude", sessions: 1, costUsd: 20 }]);
   });
 });

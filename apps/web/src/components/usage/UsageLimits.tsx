@@ -16,6 +16,7 @@ import {
   paceRemainingPercent,
   remainingPercent,
   type ResetCreditChoice,
+  type LimitGrouping,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { msg, T, useGT, useMessages } from "gt-react";
@@ -392,10 +393,12 @@ export function ResetCredits({
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
+  grouping,
   now,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+  readonly grouping: LimitGrouping;
   readonly now: number;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -428,5 +431,5 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} />;
+  return <UsageLimitsPooled presentations={selected} grouping={grouping} now={now} />;
 }

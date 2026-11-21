@@ -4,6 +4,7 @@ import {
   collectLimitPools,
   displayLimitWindows,
   type LimitAccount,
+  type LimitGrouping,
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
@@ -641,15 +642,31 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   const m = useMessages();
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <ProviderInstanceIcon
-          driverKind={pool.driver}
-          displayName={label}
-          indicatorBackground="var(--background)"
-          className="size-5"
-          iconClassName="size-4 text-foreground/80"
-        />
-        {label}
+      <h2 className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+        {pool.account ? (
+          <>
+            <AccountAvatar account={pool.account} />
+            <span className="shrink-0">{label}</span>
+            <span className="text-muted-foreground">·</span>
+            <AccountName account={pool.account} className="min-w-0 truncate" />
+            {pool.account.plan ? (
+              <span className="shrink-0 font-normal text-muted-foreground">
+                {pool.account.plan}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <ProviderInstanceIcon
+              driverKind={pool.driver}
+              displayName={label}
+              indicatorBackground="var(--background)"
+              className="size-5"
+              iconClassName="size-4 text-foreground/80"
+            />
+            {label}
+          </>
+        )}
       </h2>
       {windows.map((window) => {
         const details =
@@ -671,16 +688,18 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
 
 export function UsageLimitsPooled({
   presentations,
+  grouping = "pooled",
   now,
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
+  readonly grouping?: LimitGrouping;
   readonly now: number;
 }) {
   const gt = useGT();
   const m = useMessages();
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const pools = collectLimitPools(collectLimitAccounts(presentations), now, grouping);
   const notices = collectLimitNotices(presentations, m);
   const externalLinks = collectExternalUsageLinks(presentations, m);
   return (
@@ -692,7 +711,7 @@ export function UsageLimitsPooled({
       ) : null}
       <SegmentPopoverContext value={segmentPopover}>
         {pools.map((pool) => (
-          <Fragment key={pool.driver}>
+          <Fragment key={pool.key}>
             <PoolSection pool={pool} now={now} />
           </Fragment>
         ))}

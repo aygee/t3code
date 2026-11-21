@@ -12,7 +12,7 @@ import {
 } from "@t3tools/shared/usageFormat";
 import { formatRelativeHourShort } from "@t3tools/shared/usageFormatCopy";
 import { cn } from "~/lib/utils";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { PROVIDER_PRESENTATION } from "./usageProviders";
 import { observeResize } from "~/lib/observeResize";
 
 const VIEW_WIDTH = 960;
@@ -23,8 +23,31 @@ const NONE_LOADING: ReadonlySet<UsageProviderKind> = new Set();
 
 export type UsageChartMetric = "tokens" | "cost";
 
+type PeriodTotals = DailyTotals | HourlyTotals;
+
+/** One stacked band: a provider when pooled, an account when grouped by account. */
+export interface ChartSeries {
+  readonly key: string;
+  readonly provider: UsageProviderKind;
+  readonly label: string;
+  readonly color: string;
+  readonly totals: (
+    period: PeriodTotals,
+  ) => { readonly costUsd: number; readonly totalTokens: number } | undefined;
+}
+
+export function providerSeries(providers: readonly UsageProviderKind[]): readonly ChartSeries[] {
+  return providers.map((provider) => ({
+    key: provider,
+    provider,
+    label: PROVIDER_PRESENTATION[provider].label,
+    color: PROVIDER_PRESENTATION[provider].color,
+    totals: (period) => period.byProvider.get(provider),
+  }));
+}
+
 interface UsageProviderChartProps {
-  readonly providers: readonly UsageProviderKind[];
+  readonly series: readonly ChartSeries[];
   readonly loadingProviders?: ReadonlySet<UsageProviderKind>;
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
@@ -39,7 +62,7 @@ interface UsageProviderChartProps {
 
 export interface DayColumn {
   readonly bands: readonly {
-    readonly provider: UsageProviderKind;
+    readonly key: string;
     readonly value: number;
   }[];
   readonly total: number;
@@ -50,27 +73,21 @@ interface Point {
   readonly y: number;
 }
 
-function valueFor(
-  totals: DailyTotals | HourlyTotals | undefined,
-  provider: UsageProviderKind,
-  metric: UsageChartMetric,
-): number {
-  const entry = totals?.byProvider.get(provider);
-  if (entry === undefined) return 0;
-  return metric === "tokens" ? entry.totalTokens : entry.costUsd;
-}
-
 export function buildPeriodColumns(
   periods: readonly string[],
-  byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
+  byPeriod: ReadonlyMap<string, PeriodTotals>,
+  series: readonly ChartSeries[],
   metric: UsageChartMetric,
 ): readonly DayColumn[] {
   return periods.map((period) => {
     const entry = byPeriod.get(period);
-    const bands = PROVIDER_ORDER.map((provider) => ({
-      provider,
-      value: valueFor(entry, provider, metric),
-    }));
+    const bands = series.map(({ key, totals }) => {
+      const value = entry === undefined ? undefined : totals(entry);
+      return {
+        key,
+        value: value === undefined ? 0 : metric === "tokens" ? value.totalTokens : value.costUsd,
+      };
+    });
     return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
   });
 }
@@ -122,9 +139,11 @@ interface CurveSegment {
   readonly to: Point;
 }
 
-function smoothCurve(points: readonly Point[]): readonly CurveSegment[] {
+function hermiteCurve(
+  points: readonly Point[],
+  tangents: readonly number[],
+): readonly CurveSegment[] {
   if (points.length < 2) return [];
-  const tangents = monotoneTangents(points);
   const segments: CurveSegment[] = [];
 
   for (let index = 0; index < points.length - 1; index += 1) {
@@ -152,8 +171,18 @@ function curvePath(segments: readonly CurveSegment[]): string {
   return path;
 }
 
-function areaPath(line: string) {
-  return line === "" ? "" : `${line} L${VIEW_WIDTH},${VIEW_HEIGHT} L0,${VIEW_HEIGHT} Z`;
+function reversedCurve(segments: readonly CurveSegment[]): readonly CurveSegment[] {
+  return segments
+    .toReversed()
+    .map(({ from, c1, c2, to }) => ({ from: to, c1: c2, c2: c1, to: from }));
+}
+
+/** The band between a series' top edge and the top of the series stacked below it. */
+function bandPath(upper: readonly CurveSegment[], lower: readonly CurveSegment[]) {
+  const top = curvePath(upper);
+  if (top === "") return "";
+  const bottom = curvePath(reversedCurve(lower));
+  return `${top} L${bottom.slice(1)} Z`;
 }
 
 function niceScale(peak: number, count: number): { max: number; ticks: readonly number[] } {
@@ -176,11 +205,7 @@ function chartScale(
   columns: readonly DayColumn[],
   loadingProviders: ReadonlySet<UsageProviderKind>,
 ) {
-  // Layered series each start at zero; summing peaks would waste plot height.
-  const peak = columns.reduce(
-    (max, column) => column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
-    0,
-  );
+  const peak = columns.reduce((max, column) => Math.max(max, column.total), 0);
   return peak === 0 && loadingProviders.size > 0
     ? { max: TICK_COUNT, ticks: PLACEHOLDER_TICKS, labeled: false }
     : { ...niceScale(peak, TICK_COUNT), labeled: true };
@@ -192,52 +217,72 @@ function valueToY(value: number, max: number) {
 
 function buildChart(
   periods: readonly string[],
-  byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
+  byPeriod: ReadonlyMap<string, PeriodTotals>,
   metric: UsageChartMetric,
-  providers: readonly UsageProviderKind[],
+  series: readonly ChartSeries[],
   loadingProviders: ReadonlySet<UsageProviderKind>,
 ) {
-  const columns = buildPeriodColumns(periods, byPeriod, metric);
+  const columns = buildPeriodColumns(periods, byPeriod, series, metric);
   const scale = chartScale(columns, loadingProviders);
   const stepX = periods.length < 2 ? 0 : VIEW_WIDTH / (periods.length - 1);
-  const paths = providers.map((provider) => {
-    const slot = PROVIDER_ORDER.indexOf(provider);
-    const line = curvePath(
-      smoothCurve(
-        columns.map((column, periodIndex) => ({
-          x: periodIndex * stepX,
-          y: valueToY(column.bands[slot]?.value ?? 0, scale.max),
-        })),
-      ),
-    );
-    return {
-      provider,
-      loading: loadingProviders.has(provider),
+  // The largest series sits at the bottom of the stack, where its shape reads truest.
+  const stacked = series
+    .map((entry, slot) => ({
+      entry,
+      slot,
       total: columns.reduce((sum, column) => sum + (column.bands[slot]?.value ?? 0), 0),
-      line,
-      area: areaPath(line),
+    }))
+    .toSorted((a, b) => b.total - a.total);
+  // Each band is smoothed on its own and the curves are summed: Hermite curves add, and a
+  // monotone band never dips below zero, so stacked edges can never cross.
+  const heights = columns.map(() => 0);
+  const slopes = columns.map(() => 0);
+  const edge = () =>
+    hermiteCurve(
+      heights.map((height, index) => ({ x: index * stepX, y: VIEW_HEIGHT - height })),
+      slopes.map((slope) => -slope),
+    );
+  let lower = edge();
+  const paths = stacked.map(({ entry, slot }) => {
+    const band = columns.map((column, index) => ({
+      x: index * stepX,
+      y: VIEW_HEIGHT - valueToY(column.bands[slot]?.value ?? 0, scale.max),
+    }));
+    const bandSlopes = monotoneTangents(band);
+    band.forEach((point, index) => {
+      heights[index] = (heights[index] ?? 0) + point.y;
+      slopes[index] = (slopes[index] ?? 0) + (bandSlopes[index] ?? 0);
+    });
+    const upper = edge();
+    const path = {
+      series: entry,
+      loading: loadingProviders.has(entry.provider),
+      line: curvePath(upper),
+      area: bandPath(upper, lower),
     };
+    lower = upper;
+    return path;
   });
 
-  return { columns, scale, stepX, paths: paths.toSorted((a, b) => b.total - a.total) };
+  return { columns, scale, stepX, paths };
 }
 
 function UsageChartTooltip({
   tooltipRef,
   label,
   column,
-  providers,
+  series,
   loadingProviders,
   format,
 }: {
   readonly tooltipRef: React.Ref<HTMLDivElement>;
   readonly label: string;
   readonly column: DayColumn | undefined;
-  readonly providers: readonly UsageProviderKind[];
+  readonly series: readonly ChartSeries[];
   readonly loadingProviders: ReadonlySet<UsageProviderKind>;
   readonly format: (value: number) => string;
 }) {
-  const partial = providers.some((provider) => loadingProviders.has(provider));
+  const partial = series.some((entry) => loadingProviders.has(entry.provider));
   return (
     <div
       ref={tooltipRef}
@@ -248,25 +293,30 @@ function UsageChartTooltip({
       }}
     >
       <div className="mb-1 text-muted-foreground">{label}</div>
-      {providers.map((provider) => {
-        const { label: providerLabel, driverKind } = PROVIDER_PRESENTATION[provider];
+      {series.map((entry) => {
+        const { label: providerLabel, driverKind } = PROVIDER_PRESENTATION[entry.provider];
         return (
-          <div key={provider} className="flex items-center justify-between gap-3">
-            <span className="flex items-center gap-1.5 text-muted-foreground">
+          <div key={entry.key} className="flex items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              <span
+                aria-hidden
+                className="size-2 shrink-0 rounded-full"
+                style={{ backgroundColor: entry.color }}
+              />
               <ProviderInstanceIcon
                 driverKind={driverKind}
                 displayName={providerLabel}
                 iconClassName="size-3"
               />
-              {providerLabel}
+              <span className="truncate">{entry.label}</span>
             </span>
             <span
               className={cn(
                 "tabular-nums",
-                loadingProviders.has(provider) ? "text-muted-foreground" : "text-foreground",
+                loadingProviders.has(entry.provider) ? "text-muted-foreground" : "text-foreground",
               )}
             >
-              {format(column?.bands.find((band) => band.provider === provider)?.value ?? 0)}
+              {format(column?.bands.find((band) => band.key === entry.key)?.value ?? 0)}
             </span>
           </div>
         );
@@ -287,7 +337,7 @@ function UsageChartPlot({
   periods,
   columns,
   stepX,
-  providers,
+  series,
   loadingProviders,
   format,
   formatTooltipPeriod,
@@ -296,7 +346,7 @@ function UsageChartPlot({
   readonly periods: readonly string[];
   readonly columns: readonly DayColumn[];
   readonly stepX: number;
-  readonly providers: readonly UsageProviderKind[];
+  readonly series: readonly ChartSeries[];
   readonly loadingProviders: ReadonlySet<UsageProviderKind>;
   readonly format: (value: number) => string;
   readonly formatTooltipPeriod: (period: string) => string;
@@ -396,7 +446,7 @@ function UsageChartPlot({
           tooltipRef={tooltipRef}
           label={formatTooltipPeriod(hoveredPeriod)}
           column={columns[hoverIndex]}
-          providers={providers}
+          series={series}
           loadingProviders={loadingProviders}
           format={format}
         />
@@ -406,7 +456,7 @@ function UsageChartPlot({
 }
 
 export function UsageProviderChart({
-  providers,
+  series,
   loadingProviders = NONE_LOADING,
   days,
   daily,
@@ -422,7 +472,7 @@ export function UsageProviderChart({
   const locale = useLocale();
   const m = useMessages();
   const periods = resolution === "hour" ? hours : days;
-  const totals: readonly (DailyTotals | HourlyTotals)[] = resolution === "hour" ? hourly : daily;
+  const totals: readonly PeriodTotals[] = resolution === "hour" ? hourly : daily;
   const byPeriod = new Map(
     totals.map((entry) => ["hourStart" in entry ? entry.hourStart : entry.day, entry]),
   );
@@ -430,7 +480,7 @@ export function UsageProviderChart({
     periods,
     byPeriod,
     metric,
-    providers,
+    series,
     loadingProviders,
   );
 
@@ -468,7 +518,7 @@ export function UsageProviderChart({
           periods={periods}
           columns={columns}
           stepX={stepX}
-          providers={providers}
+          series={series}
           loadingProviders={loadingProviders}
           format={format}
           formatTooltipPeriod={formatTooltipPeriod}
@@ -490,22 +540,23 @@ export function UsageProviderChart({
             );
           })}
 
-          {paths.map(({ provider, loading, area }) => (
+          {paths.map(({ series: entry, loading, area }) => (
             <path
-              key={provider}
+              key={entry.key}
               d={area}
               className={seriesClassName(loading)}
-              fill={PROVIDER_PRESENTATION[provider].color}
-              fillOpacity={0.12}
+              fill={entry.color}
+              // Stacked bands need solid fills to read as layers; a lone series stays a light wash.
+              fillOpacity={paths.length > 1 ? 0.6 : 0.12}
             />
           ))}
-          {paths.map(({ provider, loading, line }) => (
+          {paths.map(({ series: entry, loading, line }) => (
             <path
-              key={provider}
+              key={entry.key}
               d={line}
               className={seriesClassName(loading)}
               fill="none"
-              stroke={PROVIDER_PRESENTATION[provider].color}
+              stroke={entry.color}
               strokeWidth={2}
               vectorEffect="non-scaling-stroke"
             />
@@ -546,12 +597,12 @@ export function UsageProviderChart({
           <thead>
             <tr>
               <th scope="col">{resolution === "hour" ? gt("Hour") : gt("Day")}</th>
-              {providers.map((provider) => (
-                <th key={provider} scope="col">
-                  {PROVIDER_PRESENTATION[provider].label}
+              {series.map((entry) => (
+                <th key={entry.key} scope="col">
+                  {entry.label}
                 </th>
               ))}
-              {providers.length > 1 ? (
+              {series.length > 1 ? (
                 <th scope="col">
                   <T>Total</T>
                 </th>
@@ -564,12 +615,12 @@ export function UsageProviderChart({
               return (
                 <tr key={period}>
                   <th scope="row">{formatTooltipPeriod(period)}</th>
-                  {providers.map((provider) => (
-                    <td key={provider}>
-                      {format(column?.bands.find((band) => band.provider === provider)?.value ?? 0)}
+                  {series.map((entry) => (
+                    <td key={entry.key}>
+                      {format(column?.bands.find((band) => band.key === entry.key)?.value ?? 0)}
                     </td>
                   ))}
-                  {providers.length > 1 ? <td>{format(column?.total ?? 0)}</td> : null}
+                  {series.length > 1 ? <td>{format(column?.total ?? 0)}</td> : null}
                 </tr>
               );
             })}

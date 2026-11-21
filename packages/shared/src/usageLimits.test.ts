@@ -1295,6 +1295,17 @@ describe("pooled account columns", () => {
     expect(pool!.windows[1]!.resets.map((reset) => reset.member.account.key)).toEqual(["a", "b"]);
     expect(pool!.windows[1]!.remainingPercent).toBe(50);
     expect(keys(collectLimitPools(accounts.toReversed(), now)[0]!)).toEqual(keys(pool!));
+    const byAccount = collectLimitPools(accounts, now, "account");
+    expect(
+      byAccount.map((separate) => ({
+        key: separate.key,
+        account: separate.account?.key,
+        remaining: separate.windows.map((row) => row.remainingPercent),
+      })),
+    ).toEqual([
+      { key: "a", account: "a", remaining: [90, 20] },
+      { key: "b", account: "b", remaining: [10, 80] },
+    ]);
   });
 
   it.each([undefined, "invalid", "2026-09-03T11:30:00.000Z"])(

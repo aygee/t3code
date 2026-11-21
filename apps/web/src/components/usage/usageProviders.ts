@@ -80,3 +80,12 @@ export function rankProvidersByMetric(
     totals.find((entry) => entry.provider === provider)?.[field] ?? 0;
   return providers.toSorted((left, right) => value(right) - value(left));
 }
+
+const ACCOUNT_SHADES = [100, 45, 72, 25];
+
+/** Accounts of one provider share its hue, so each further account takes a lighter shade. */
+export function accountColor(provider: UsageProviderKind, index: number): string {
+  const color = PROVIDER_PRESENTATION[provider].color;
+  const shade = ACCOUNT_SHADES[index % ACCOUNT_SHADES.length] ?? 100;
+  return shade === 100 ? color : `color-mix(in oklab, ${color} ${shade}%, var(--background))`;
+}

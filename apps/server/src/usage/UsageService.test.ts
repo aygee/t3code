@@ -1858,12 +1858,15 @@ describe("UsageService", () => {
         ),
       );
       assert.strictEqual(totalOutputTokens(summary), 40);
-      assert.strictEqual(
-        summary.sources.filter(
-          (source) => source.fingerprint.provider === "codex" && source.status === "ok",
-        ).length,
-        1,
+      const codexSources = summary.sources.filter(
+        (source) => source.fingerprint.provider === "codex" && source.status === "ok",
       );
+      assert.strictEqual(codexSources.length, 1);
+      // Both accounts share the directory, so the source names each of them.
+      assert.deepStrictEqual(codexSources[0]?.instanceIds, [
+        ProviderInstanceId.make("codex"),
+        ProviderInstanceId.make("codex-personal"),
+      ]);
     }),
   );
 

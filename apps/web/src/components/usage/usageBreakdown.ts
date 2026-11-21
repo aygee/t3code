@@ -10,7 +10,7 @@ import { msg } from "gt-react";
 
 import type { ShareSegment } from "./UsageShareBar";
 
-export function sortModelsByTokens(models: readonly ModelTotals[]) {
+export function sortModelsByTokens<Model extends ModelTotals>(models: readonly Model[]) {
   return models.toSorted(
     (left, right) => right.totalTokens - left.totalTokens || right.costUsd - left.costUsd,
   );

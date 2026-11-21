@@ -93,6 +93,7 @@ export interface UsageView {
 export function mergeAnsweredUsage(
   environments: readonly EnvironmentUsageStatus[],
   keepBucket?: (bucket: UsageBucket) => boolean,
+  accountKey?: string,
 ): MergedUsage {
   const answered: EnvironmentUsage[] = environments.flatMap(({ environmentId, label, summary }) =>
     summary === null
@@ -108,7 +109,11 @@ export function mergeAnsweredUsage(
           },
         ],
   );
-  return mergeUsage(answered, USAGE_CONTRACT_VERSION);
+  return mergeUsage(
+    answered,
+    USAGE_CONTRACT_VERSION,
+    accountKey === undefined ? {} : { accountKey },
+  );
 }
 
 const NO_HIDDEN_PROVIDERS: ReadonlySet<UsageProviderKind> = new Set();
@@ -140,6 +145,7 @@ function deriveSelection(
   environments: readonly EnvironmentUsageStatus[],
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null,
   hiddenProviders: ReadonlySet<UsageProviderKind>,
+  accountKey: string | undefined,
 ) {
   const selectedEnvironments =
     selectedEnvironmentIds === null
@@ -149,8 +155,13 @@ function deriveSelection(
     environments,
     selectedEnvironmentIds,
     hiddenProviders,
+    accountKey,
     selectedEnvironments,
-    merged: mergeAnsweredUsage(withoutProviders(selectedEnvironments, hiddenProviders)),
+    merged: mergeAnsweredUsage(
+      withoutProviders(selectedEnvironments, hiddenProviders),
+      undefined,
+      accountKey,
+    ),
   };
 }
 
@@ -158,6 +169,7 @@ export function useUsage(
   input: UsageSummaryInput,
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
   hiddenProviders: ReadonlySet<UsageProviderKind> = NO_HIDDEN_PROVIDERS,
+  accountKey?: string,
 ): UsageView {
   const windowKey = JSON.stringify({
     sinceDay: input.sinceDay,
@@ -171,15 +183,16 @@ export function useUsage(
   const environments = useAtomValue(atom);
   // Identity-based render sync needs a derivation retained by inputs across renders.
   const [derived, setDerived] = useState(() =>
-    deriveSelection(environments, selectedEnvironmentIds, hiddenProviders),
+    deriveSelection(environments, selectedEnvironmentIds, hiddenProviders, accountKey),
   );
   let current = derived;
   if (
     derived.environments !== environments ||
     derived.selectedEnvironmentIds !== selectedEnvironmentIds ||
-    derived.hiddenProviders !== hiddenProviders
+    derived.hiddenProviders !== hiddenProviders ||
+    derived.accountKey !== accountKey
   ) {
-    current = deriveSelection(environments, selectedEnvironmentIds, hiddenProviders);
+    current = deriveSelection(environments, selectedEnvironmentIds, hiddenProviders, accountKey);
     setDerived(current);
   }
   const { selectedEnvironments, merged } = current;
@@ -211,6 +224,7 @@ export function useUsage(
     | (NonNullable<UsageView["shown"]> & {
         readonly selection: typeof selectedEnvironmentIds;
         readonly hidden: typeof hiddenProviders;
+        readonly accountKey: typeof accountKey;
       })
     | null
   >(null);
@@ -219,17 +233,21 @@ export function useUsage(
     (lastAnswered?.merged !== merged ||
       lastAnswered.window !== input ||
       lastAnswered.selection !== selectedEnvironmentIds ||
-      lastAnswered.hidden !== hiddenProviders)
+      lastAnswered.hidden !== hiddenProviders ||
+      lastAnswered.accountKey !== accountKey)
   ) {
     setLastAnswered({
       window: input,
       merged,
       selection: selectedEnvironmentIds,
       hidden: hiddenProviders,
+      accountKey,
     });
   }
   const kept =
-    lastAnswered?.selection === selectedEnvironmentIds && lastAnswered.hidden === hiddenProviders
+    lastAnswered?.selection === selectedEnvironmentIds &&
+    lastAnswered.hidden === hiddenProviders &&
+    lastAnswered.accountKey === accountKey
       ? lastAnswered
       : null;
   const shown =
