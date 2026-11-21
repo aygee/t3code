@@ -21,7 +21,10 @@ describe("providerInstanceInitials", () => {
     expect(providerInstanceInitials("(hub)")).toBe("HU");
     expect(providerInstanceInitials("ClaudeProx")).toBe("CP");
     expect(providerInstanceInitials("ClaudeAPI")).toBe("CA");
-    expect(providerInstanceInitials("API")).toBe("AP");
+    expect(providerInstanceInitials("API")).toBe("API");
+    expect(providerInstanceInitials("SBS")).toBe("SBS");
+    expect(providerInstanceInitials("(SBS)")).toBe("SBS");
+    expect(providerInstanceInitials("SBSX")).toBe("SB");
     expect(providerInstanceInitials("ClaudeProx Work")).toBe("CW");
     expect(providerInstanceInitials("(ClaudeProx)")).toBe("CP");
   });

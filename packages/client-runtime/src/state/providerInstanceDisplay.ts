@@ -37,6 +37,8 @@ export function providerInstanceInitials(label: string): string {
       .map((word) => word.replace(/^['’]+|['’]+$/gu, ""))
       .filter(Boolean);
   let words = toWords(label.replace(/[^\P{P}'’]+/gu, " "));
+  // A short all-caps name is already an abbreviation, so "SBS" stays SBS.
+  if (words.length === 1 && /^[\p{Lu}\p{N}]{3}$/u.test(words[0]!)) return words[0]!;
   if (words.length === 1) words = toWords(words[0]!.replace(/(\p{Ll})(\p{Lu})/gu, "$1 $2"));
   if (words.length === 0) return "";
   if (words.length === 1) return Array.from(words[0]!).slice(0, 2).join("").toUpperCase();
