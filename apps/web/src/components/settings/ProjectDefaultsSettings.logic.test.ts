@@ -1,10 +1,20 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ModelSelection,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
 import { providerInstanceEntriesFor } from "../../providerInstances";
-import { resolveDefaultModelSettingsPresentation } from "./ProjectDefaultsSettings.logic";
+import {
+  projectDefaultModels,
+  resolveDefaultModelSettingsPresentation,
+} from "./ProjectDefaultsSettings.logic";
 
 const claudeId = ProviderInstanceId.make("claudeAgent");
 const high = [{ id: "effort", value: "high" }];
@@ -108,5 +118,31 @@ describe("resolveDefaultModelSettingsPresentation", () => {
     );
     expect(row.providerNote).toBeNull();
     expect(row.selection).toMatchObject({ instanceId: claudeId, model: "claude-sonnet-5" });
+  });
+});
+
+describe("projectDefaultModels", () => {
+  const member = (defaultModelSelection: ModelSelection | null) => ({
+    project: { id: ProjectId.make("p"), defaultModelSelection },
+    settings: DEFAULT_SERVER_SETTINGS,
+    providers: claudeAndCodex,
+  });
+  const describeModels = (members: Parameters<typeof projectDefaultModels>[0]) =>
+    projectDefaultModels(members).map(({ label, entry }) => [label, entry?.driverKind]);
+
+  it("names the override or automatic model per checkout and skips disconnected ones", () => {
+    expect(describeModels([member(savedClaude)])).toEqual([["claude-opus-4-8", "claudeAgent"]]);
+    expect(describeModels([member(null)])).toEqual([["gpt-5.6", "codex"]]);
+    expect(
+      describeModels([
+        member(savedClaude),
+        member(savedClaude),
+        { ...member(null), settings: undefined },
+      ]),
+    ).toEqual([["claude-opus-4-8", "claudeAgent"]]);
+    expect(describeModels([member(savedClaude), member(null)])).toEqual([
+      ["claude-opus-4-8", "claudeAgent"],
+      ["gpt-5.6", "codex"],
+    ]);
   });
 });

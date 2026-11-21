@@ -1,16 +1,26 @@
 import { resolveEnvironmentMachineKind, type EnvironmentId } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { useGT } from "gt-react";
-import { ChevronRightIcon, LayersIcon } from "lucide-react";
+import { buildTraitsTriggerDisplay } from "@t3tools/client-runtime/model-traits";
+import { useGT, useMessages } from "gt-react";
+import { ChevronRightIcon, GaugeIcon, LayersIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
-import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
+import {
+  useEnvironmentProviders,
+  useEnvironments,
+  type EnvironmentPresentation,
+} from "../../state/environments";
+import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { getTraitsSectionVisibility } from "../chat/TraitsPicker";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ITEM_ROW_CLASSNAME } from "./itemRows";
+import { projectDefaultModels } from "./ProjectDefaultsSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -26,6 +36,7 @@ import {
 interface ScopeChoice {
   label: string;
   secondary?: string;
+  detail?: ReactNode;
   icon: ReactNode;
   search: SettingsScopeSearch;
 }
@@ -45,10 +56,72 @@ export function SettingsScopeNotice({
   eligibleEnvironmentIds?: readonly EnvironmentId[];
 }) {
   const gt = useGT();
+  const resolve = useMessages();
   const { selectScope, search, groups } = useSettingsScope();
   const navigate = useNavigate({ from: "/settings" });
   const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
+  const providersByEnvironment = useEnvironmentProviders();
+  const defaultModel = (group: SidebarProjectSnapshot) => {
+    const models = projectDefaultModels(
+      group.memberProjects.map((member) => ({
+        project: member,
+        settings: environments.find((entry) => entry.environmentId === member.environmentId)
+          ?.serverConfig?.settings,
+        providers: providersByEnvironment.get(member.environmentId) ?? EMPTY_SERVER_PROVIDERS,
+      })),
+    );
+    const [model] = models;
+    if (!model) return null;
+    if (models.length > 1) return gt("Mixed", { $context: "values differ across targets" });
+    const chip = (
+      <Badge variant="outline" size="control" className="min-w-0">
+        {model.entry ? (
+          <ProviderInstanceIcon
+            driverKind={model.entry.driverKind}
+            displayName={model.entry.displayName}
+            accentColor={model.entry.accentColor}
+            acpRegistryAgentId={model.entry.acpRegistryAgentId}
+            acpRegistryIconUrl={model.entry.acpRegistryIconUrl}
+            showBadge={model.showInstanceBadge}
+            className="size-4"
+            iconClassName="size-4"
+            indicatorBackground="var(--background)"
+            badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-5xs"
+          />
+        ) : null}
+        <span className="truncate">{model.label}</span>
+      </Badge>
+    );
+    if (!model.entry) return chip;
+    const traits = getTraitsSectionVisibility({
+      provider: model.entry.driverKind,
+      models: model.entry.models,
+      model: model.selection.model,
+      modelOptions: model.selection.options ?? [],
+      allowPromptInjectedEffort: false,
+      resolve,
+    });
+    if (!traits.hasAnyControls) return chip;
+    const { label: traitsLabel } = buildTraitsTriggerDisplay(
+      {
+        descriptors: traits.descriptors,
+        primarySelectDescriptorId: traits.primarySelectDescriptor?.id ?? null,
+        ultrathinkPromptControlled: traits.ultrathinkPromptControlled,
+        modelSelection: model.selection,
+      },
+      resolve,
+    );
+    return (
+      <>
+        {chip}
+        <Badge variant="outline" size="control" className="hidden min-w-0 sm:inline-flex">
+          <GaugeIcon aria-hidden />
+          <span className="truncate">{traitsLabel}</span>
+        </Badge>
+      </>
+    );
+  };
   const environmentIcon = (environment: EnvironmentPresentation | undefined) =>
     environment ? (
       <EnvironmentMachineIcon
@@ -98,6 +171,7 @@ export function SettingsScopeNotice({
                 : []),
               group.workspaceRoot,
             ].join(" · "),
+            detail: defaultModel(group),
             icon: <ProjectFavicon project={group} className="size-4 shrink-0" />,
             search: selectProjectAxis(search, group.projectKey),
           }))
@@ -161,6 +235,11 @@ export function SettingsScopeNotice({
             </Tooltip>
           ) : null}
         </span>
+        {choice.detail ? (
+          <span className="flex max-w-96 shrink-0 gap-1.5 text-xs text-muted-foreground">
+            {choice.detail}
+          </span>
+        ) : null}
         <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
       </button>
     ));
