@@ -808,6 +808,22 @@ describe("sortScopedProjectsForSidebar", () => {
       "Archived-only project",
     ]);
   });
+
+  it("sorts by name, ignoring activity and letter case", () => {
+    const projects = ["zeta", "Beta", "alpha"].map((title) =>
+      makeProject({ id: ProjectId.make(`project-${title}`), title }),
+    );
+    const threads = [
+      makeThread({
+        projectId: ProjectId.make("project-zeta"),
+        updatedAt: "2026-03-09T10:10:00.000Z",
+      }),
+    ];
+
+    const sorted = sortScopedProjectsForSidebar(projects, threads, "name");
+
+    expect(sorted.map((project) => project.title)).toEqual(["alpha", "Beta", "zeta"]);
+  });
 });
 
 describe("sortSidebarV2ProjectGroups", () => {
@@ -818,11 +834,13 @@ describe("sortSidebarV2ProjectGroups", () => {
     const projects = [
       {
         ...makeProject({ id: olderProjectId, title: "A older project" }),
+        displayName: "A older project",
         projectKey: "logical-older",
         memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: olderProjectId }],
       },
       {
         ...makeProject({ id: newerProjectId, title: "Z newer project" }),
+        displayName: "Z newer project",
         projectKey: "logical-newer",
         memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: newerProjectId }],
       },
@@ -855,6 +873,27 @@ describe("sortSidebarV2ProjectGroups", () => {
         (project) => project.projectKey,
       ),
     ).toEqual(["logical-newer", "logical-older"]);
+  });
+
+  it("sorts by name using the label the picker shows", () => {
+    const projects = [
+      { title: "od-i18n", displayName: "od-i18n" },
+      { title: "t3code", displayName: "aygee/t3code" },
+    ].map(({ title, displayName }) => {
+      const id = ProjectId.make(`project-${displayName}`);
+      return {
+        ...makeProject({ id, title }),
+        displayName,
+        projectKey: displayName,
+        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: id }],
+      };
+    });
+
+    expect(
+      sortSidebarV2ProjectGroups(projects, [], "name", new Set()).map(
+        (project) => project.displayName,
+      ),
+    ).toEqual(["aygee/t3code", "od-i18n"]);
   });
 });
 

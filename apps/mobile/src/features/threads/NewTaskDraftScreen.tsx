@@ -862,9 +862,10 @@ export function NewTaskDraftScreen(props: {
       </NativeScrollEdgeEffectsContext>
     );
 
-  const contextProjectLabel = flow.isScratchDraft
-    ? gt("No project")
-    : (selectedProjectLabel ?? selectedProject.title);
+  const contextProjectLabel =
+    flow.isScratchDraft && !selectedProject.hasCustomTitle
+      ? gt("No project")
+      : (selectedProjectLabel ?? selectedProject.title);
   const contextControls = (
     <View className="flex-row items-center gap-1 px-2">
       <View className="min-w-0 shrink">

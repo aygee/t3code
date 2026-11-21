@@ -24,7 +24,7 @@ import { m, type MessageResolver } from "../../i18n/messages";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 
-export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual">;
+export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual" | "name">;
 
 export interface HomeProjectScope {
   readonly key: string;
