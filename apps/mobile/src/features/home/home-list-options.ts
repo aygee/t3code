@@ -24,9 +24,7 @@ function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
     selectedEnvironmentId: filters?.environmentId ?? null,
     selectedProjectKey: filters?.projectKey ?? null,
     projectSortOrder:
-      DEFAULT_SIDEBAR_PROJECT_SORT_ORDER === "manual"
-        ? "updated_at"
-        : DEFAULT_SIDEBAR_PROJECT_SORT_ORDER,
+      DEFAULT_SIDEBAR_PROJECT_SORT_ORDER === "created_at" ? "created_at" : "updated_at",
   };
 }
 

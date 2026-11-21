@@ -548,6 +548,7 @@ type ScopedSidebarThread = ThreadSortInput & {
 
 type LogicalSidebarProject = SidebarProject & {
   projectKey: string;
+  displayName: string;
   memberProjectRefs: readonly {
     environmentId: string;
     projectId: string;
@@ -1335,7 +1336,7 @@ export function getFallbackThreadIdAfterDelete<
 function getProjectSortTimestamp(
   project: SidebarProject,
   projectThreads: readonly ThreadSortInput[],
-  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual" | "name">,
 ): number {
   if (projectThreads.length > 0) {
     return projectThreads.reduce(
@@ -1358,6 +1359,9 @@ function sortProjectsByActivity<TProject extends SidebarProject>(
 ): TProject[] {
   if (sortOrder === "manual") {
     return [...projects];
+  }
+  if (sortOrder === "name") {
+    return [...projects].sort(compareTies);
   }
 
   // Project timestamps scan all threads; compute once per project instead of per comparison.
@@ -1408,7 +1412,8 @@ export function sortLogicalProjectsForSidebar<
     sortOrder,
     (project) => threadsByProjectKey.get(project.projectKey) ?? [],
     (left, right) =>
-      left.title.localeCompare(right.title) || left.projectKey.localeCompare(right.projectKey),
+      left.displayName.localeCompare(right.displayName) ||
+      left.projectKey.localeCompare(right.projectKey),
   );
 }
 
