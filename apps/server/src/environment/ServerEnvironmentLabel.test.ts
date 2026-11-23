@@ -65,7 +65,7 @@ const exitsWithFailure = ProcessRunner.ProcessRunner.of({
     }),
 });
 
-it.effect("qualifies the inherited Windows hostname only inside WSL", () =>
+it.effect("prefers the override, then the friendly name, then the WSL-aware hostname", () =>
   Effect.gen(function* () {
     const cases = [
       {
@@ -79,8 +79,14 @@ it.effect("qualifies the inherited Windows hostname only inside WSL", () =>
         machineInfo: 'PRETTY_HOSTNAME="Work WSL"',
         expected: "Work WSL",
       },
+      {
+        kernel: "6.6.87.2-microsoft-standard-WSL2",
+        machineInfo: 'PRETTY_HOSTNAME="Work WSL"',
+        label: "  Personal  ",
+        expected: "Personal",
+      },
     ];
-    for (const { kernel, machineInfo, expected } of cases) {
+    for (const { kernel, machineInfo, label: override, expected } of cases) {
       const files: Record<string, string | null> = {
         "/proc/sys/kernel/osrelease": `${kernel}\n`,
         "/etc/machine-info": machineInfo,
@@ -88,7 +94,10 @@ it.effect("qualifies the inherited Windows hostname only inside WSL", () =>
       const label = yield* resolveServerEnvironmentLabel({ cwdBaseName: "project" }).pipe(
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provideService(HostProcess.Hostname, "DESKTOP-PC"),
-        Effect.provideService(HostProcess.Environment, { WSL_DISTRO_NAME: "Ubuntu" }),
+        Effect.provideService(HostProcess.Environment, {
+          WSL_DISTRO_NAME: "Ubuntu",
+          T3CODE_ENVIRONMENT_LABEL: override,
+        }),
         Effect.provideService(ProcessRunner.ProcessRunner, exitsWithFailure),
         Effect.provide(
           FileSystem.layerNoop({
